@@ -11,14 +11,11 @@ declare(strict_types=1);
  * the LICENSE file that was distributed with this source code.
  */
 
-namespace CodeIgniter\Files\Exceptions;
+namespace CodeIgniter\Exceptions;
 
 /**
- * Provides a domain-level interface for broad capture
- * of all Files-related exceptions.
- *
- * catch (\CodeIgniter\Files\Exceptions\ExceptionInterface) { ... }
+ * Exception that represents error in the program logic.
  */
-interface ExceptionInterface extends \CodeIgniter\Exceptions\ExceptionInterface
+class LogicException extends \LogicException implements ExceptionInterface
 {
 }

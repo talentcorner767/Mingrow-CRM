@@ -13,25 +13,31 @@ declare(strict_types=1);
 
 namespace CodeIgniter\Filters;
 
-use CodeIgniter\Honeypot\Exceptions\HoneypotException;
 use CodeIgniter\HTTP\IncomingRequest;
+use CodeIgniter\HTTP\RedirectResponse;
 use CodeIgniter\HTTP\RequestInterface;
 use CodeIgniter\HTTP\ResponseInterface;
+use CodeIgniter\Security\Exceptions\SecurityException;
+use CodeIgniter\Security\Security;
 
 /**
- * Honeypot filter
+ * CSRF filter.
  *
- * @see \CodeIgniter\Filters\HoneypotTest
+ * This filter is not intended to be used from the command line.
+ *
+ * @codeCoverageIgnore
+ * @see \CodeIgniter\Filters\CSRFTest
  */
-class Honeypot implements FilterInterface
+class CSRF implements FilterInterface
 {
     /**
-     * Checks if Honeypot field is empty, if not then the
-     * requester is a bot
+     * CSRF verification.
      *
      * @param list<string>|null $arguments
      *
-     * @throws HoneypotException
+     * @return RedirectResponse|null
+     *
+     * @throws SecurityException
      */
     public function before(RequestInterface $request, $arguments = null)
     {
@@ -39,22 +45,29 @@ class Honeypot implements FilterInterface
             return null;
         }
 
-        if (service('honeypot')->hasContent($request)) {
-            throw HoneypotException::isBot();
+        /** @var Security $security */
+        $security = service('security');
+
+        try {
+            $security->verify($request);
+        } catch (SecurityException $e) {
+            if ($security->shouldRedirect() && ! $request->isAJAX()) {
+                return redirect()->back()->with('error', $e->getMessage());
+            }
+
+            throw $e;
         }
 
         return null;
     }
 
     /**
-     * Attach a honeypot to the current response.
+     * We don't have anything to do here.
      *
      * @param list<string>|null $arguments
      */
     public function after(RequestInterface $request, ResponseInterface $response, $arguments = null)
     {
-        service('honeypot')->attachHoneypot($response);
-
         return null;
     }
 }

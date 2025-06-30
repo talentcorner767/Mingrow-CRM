@@ -14,8 +14,17 @@ declare(strict_types=1);
 namespace CodeIgniter\Exceptions;
 
 /**
- * Exception thrown if an argument is not of the expected type.
+ * Exception thrown when there is an error with the test code.
  */
-class InvalidArgumentException extends \InvalidArgumentException implements ExceptionInterface
+class TestException extends LogicException
 {
+    use DebugTraceableTrait;
+
+    /**
+     * @return static
+     */
+    public static function forInvalidMockClass(string $name)
+    {
+        return new static(lang('Test.invalidMockClass', [$name]));
+    }
 }

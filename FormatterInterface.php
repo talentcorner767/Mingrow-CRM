@@ -11,14 +11,19 @@ declare(strict_types=1);
  * the LICENSE file that was distributed with this source code.
  */
 
-namespace CodeIgniter\Files\Exceptions;
+namespace CodeIgniter\Format;
 
 /**
- * Provides a domain-level interface for broad capture
- * of all Files-related exceptions.
- *
- * catch (\CodeIgniter\Files\Exceptions\ExceptionInterface) { ... }
+ * Formatter interface
  */
-interface ExceptionInterface extends \CodeIgniter\Exceptions\ExceptionInterface
+interface FormatterInterface
 {
+    /**
+     * Takes the given data and formats it.
+     *
+     * @param array|object|string $data
+     *
+     * @return false|string
+     */
+    public function format($data);
 }

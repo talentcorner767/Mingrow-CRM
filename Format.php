@@ -11,10 +11,66 @@ declare(strict_types=1);
  * the LICENSE file that was distributed with this source code.
  */
 
-// Format language settings
-return [
-    'invalidFormatter' => '"{0}" is not a valid Formatter class.',
-    'invalidJSON'      => 'Failed to parse JSON string. Error: {0}',
-    'invalidMime'      => 'No Formatter defined for mime type: "{0}".',
-    'missingExtension' => 'The SimpleXML extension is required to format XML.',
-];
+namespace CodeIgniter\Format;
+
+use CodeIgniter\Format\Exceptions\FormatException;
+use Config\Format as FormatConfig;
+
+/**
+ * The Format class is a convenient place to create Formatters.
+ *
+ * @see \CodeIgniter\Format\FormatTest
+ */
+class Format
+{
+    /**
+     * Configuration instance
+     *
+     * @var FormatConfig
+     */
+    protected $config;
+
+    /**
+     * Constructor.
+     */
+    public function __construct(FormatConfig $config)
+    {
+        $this->config = $config;
+    }
+
+    /**
+     * Returns the current configuration instance.
+     *
+     * @return FormatConfig
+     */
+    public function getConfig()
+    {
+        return $this->config;
+    }
+
+    /**
+     * A Factory method to return the appropriate formatter for the given mime type.
+     *
+     * @throws FormatException
+     */
+    public function getFormatter(string $mime): FormatterInterface
+    {
+        if (! array_key_exists($mime, $this->config->formatters)) {
+            throw FormatException::forInvalidMime($mime);
+        }
+
+        $className = $this->config->formatters[$mime];
+
+        if (! class_exists($className)) {
+            throw FormatException::forInvalidFormatter($className);
+        }
+
+        $class = new $className();
+
+        if (! $class instanceof FormatterInterface) {
+            throw FormatException::forInvalidFormatter($className);
+        }
+
+        return $class;
+    }
+}

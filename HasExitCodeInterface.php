@@ -11,14 +11,15 @@ declare(strict_types=1);
  * the LICENSE file that was distributed with this source code.
  */
 
-namespace CodeIgniter\Files\Exceptions;
+namespace CodeIgniter\Exceptions;
 
 /**
- * Provides a domain-level interface for broad capture
- * of all Files-related exceptions.
- *
- * catch (\CodeIgniter\Files\Exceptions\ExceptionInterface) { ... }
+ * Interface for Exceptions that has exception code as exit code.
  */
-interface ExceptionInterface extends \CodeIgniter\Exceptions\ExceptionInterface
+interface HasExitCodeInterface extends ExceptionInterface
 {
+    /**
+     * Returns exit status code.
+     */
+    public function getExitCode(): int;
 }

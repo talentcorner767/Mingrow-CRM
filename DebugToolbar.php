@@ -13,47 +13,35 @@ declare(strict_types=1);
 
 namespace CodeIgniter\Filters;
 
-use CodeIgniter\Honeypot\Exceptions\HoneypotException;
-use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\RequestInterface;
 use CodeIgniter\HTTP\ResponseInterface;
 
 /**
- * Honeypot filter
+ * Debug toolbar filter
  *
- * @see \CodeIgniter\Filters\HoneypotTest
+ * @see \CodeIgniter\Filters\DebugToolbarTest
  */
-class Honeypot implements FilterInterface
+class DebugToolbar implements FilterInterface
 {
     /**
-     * Checks if Honeypot field is empty, if not then the
-     * requester is a bot
+     * We don't need to do anything here.
      *
      * @param list<string>|null $arguments
-     *
-     * @throws HoneypotException
      */
     public function before(RequestInterface $request, $arguments = null)
     {
-        if (! $request instanceof IncomingRequest) {
-            return null;
-        }
-
-        if (service('honeypot')->hasContent($request)) {
-            throw HoneypotException::isBot();
-        }
-
         return null;
     }
 
     /**
-     * Attach a honeypot to the current response.
+     * If the debug flag is set (CI_DEBUG) then collect performance
+     * and debug information and display it in a toolbar.
      *
      * @param list<string>|null $arguments
      */
     public function after(RequestInterface $request, ResponseInterface $response, $arguments = null)
     {
-        service('honeypot')->attachHoneypot($response);
+        service('toolbar')->prepare($request, $response);
 
         return null;
     }
