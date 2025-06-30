@@ -11,747 +11,352 @@ declare(strict_types=1);
  * the LICENSE file that was distributed with this source code.
  */
 
-namespace CodeIgniter\HTTP;
+namespace CodeIgniter\API;
 
-use CodeIgniter\Cookie\Cookie;
-use CodeIgniter\Cookie\CookieStore;
-use CodeIgniter\Cookie\Exceptions\CookieException;
-use CodeIgniter\Exceptions\InvalidArgumentException;
-use CodeIgniter\HTTP\Exceptions\HTTPException;
-use CodeIgniter\I18n\Time;
-use CodeIgniter\Pager\PagerInterface;
-use CodeIgniter\Security\Exceptions\SecurityException;
-use Config\Cookie as CookieConfig;
-use DateTime;
-use DateTimeZone;
+use CodeIgniter\Format\FormatterInterface;
+use CodeIgniter\HTTP\IncomingRequest;
+use CodeIgniter\HTTP\ResponseInterface;
 
 /**
- * Response Trait
+ * Provides common, more readable, methods to provide
+ * consistent HTTP responses under a variety of common
+ * situations when working as an API.
  *
- * Additional methods to make a PSR-7 Response class
- * compliant with the framework's own ResponseInterface.
- *
- * @see https://github.com/php-fig/http-message/blob/master/src/ResponseInterface.php
+ * @property bool $stringAsHtml Whether to treat string data as HTML in JSON response.
+ *                              Setting `true` is only for backward compatibility.
  */
 trait ResponseTrait
 {
     /**
-     * Content security policy handler
+     * Allows child classes to override the
+     * status code that is used in their API.
      *
-     * @var ContentSecurityPolicy
+     * @var array<string, int>
      */
-    protected $CSP;
+    protected $codes = [
+        'created'                   => 201,
+        'deleted'                   => 200,
+        'updated'                   => 200,
+        'no_content'                => 204,
+        'invalid_request'           => 400,
+        'unsupported_response_type' => 400,
+        'invalid_scope'             => 400,
+        'temporarily_unavailable'   => 400,
+        'invalid_grant'             => 400,
+        'invalid_credentials'       => 400,
+        'invalid_refresh'           => 400,
+        'no_data'                   => 400,
+        'invalid_data'              => 400,
+        'access_denied'             => 401,
+        'unauthorized'              => 401,
+        'invalid_client'            => 401,
+        'forbidden'                 => 403,
+        'resource_not_found'        => 404,
+        'not_acceptable'            => 406,
+        'resource_exists'           => 409,
+        'conflict'                  => 409,
+        'resource_gone'             => 410,
+        'payload_too_large'         => 413,
+        'unsupported_media_type'    => 415,
+        'too_many_requests'         => 429,
+        'server_error'              => 500,
+        'unsupported_grant_type'    => 501,
+        'not_implemented'           => 501,
+    ];
 
     /**
-     * CookieStore instance.
+     * How to format the response data.
+     * Either 'json' or 'xml'. If null is set, it will be determined through
+     * content negotiation.
      *
-     * @var CookieStore
+     * @var         string|null
+     * @phpstan-var 'html'|'json'|'xml'|null
      */
-    protected $cookieStore;
+    protected $format = 'json';
 
     /**
-     * Type of format the body is in.
-     * Valid: html, json, xml
+     * Current Formatter instance. This is usually set by ResponseTrait::format
      *
-     * @var string
+     * @var FormatterInterface|null
      */
-    protected $bodyFormat = 'html';
+    protected $formatter;
 
     /**
-     * Return an instance with the specified status code and, optionally, reason phrase.
+     * Provides a single, simple method to return an API response, formatted
+     * to match the requested format, with proper content-type and status code.
      *
-     * If no reason phrase is specified, will default recommended reason phrase for
-     * the response's status code.
+     * @param array|string|null $data
      *
-     * @see http://tools.ietf.org/html/rfc7231#section-6
-     * @see http://www.iana.org/assignments/http-status-codes/http-status-codes.xhtml
-     *
-     * @param int    $code   The 3-digit integer result code to set.
-     * @param string $reason The reason phrase to use with the
-     *                       provided status code; if none is provided, will
-     *                       default to the IANA name.
-     *
-     * @return $this
-     *
-     * @throws HTTPException For invalid status code arguments.
+     * @return ResponseInterface
      */
-    public function setStatusCode(int $code, string $reason = '')
+    protected function respond($data = null, ?int $status = null, string $message = '')
     {
-        // Valid range?
-        if ($code < 100 || $code > 599) {
-            throw HTTPException::forInvalidStatusCode($code);
+        if ($data === null && $status === null) {
+            $status = 404;
+            $output = null;
+            $this->format($data);
+        } elseif ($data === null && is_numeric($status)) {
+            $output = null;
+            $this->format($data);
+        } else {
+            $status ??= 200;
+            $output = $this->format($data);
         }
 
-        // Unknown and no message?
-        if (! array_key_exists($code, static::$statusCodes) && ($reason === '')) {
-            throw HTTPException::forUnkownStatusCode($code);
+        if ($output !== null) {
+            if ($this->format === 'json') {
+                return $this->response->setJSON($output)->setStatusCode($status, $message);
+            }
+
+            if ($this->format === 'xml') {
+                return $this->response->setXML($output)->setStatusCode($status, $message);
+            }
         }
 
-        $this->statusCode = $code;
+        return $this->response->setBody($output)->setStatusCode($status, $message);
+    }
 
-        $this->reason = ($reason !== '') ? $reason : static::$statusCodes[$code];
+    /**
+     * Used for generic failures that no custom methods exist for.
+     *
+     * @param array|string $messages
+     * @param int          $status   HTTP status code
+     * @param string|null  $code     Custom, API-specific, error code
+     *
+     * @return ResponseInterface
+     */
+    protected function fail($messages, int $status = 400, ?string $code = null, string $customMessage = '')
+    {
+        if (! is_array($messages)) {
+            $messages = ['error' => $messages];
+        }
 
-        return $this;
+        $response = [
+            'status'   => $status,
+            'error'    => $code ?? $status,
+            'messages' => $messages,
+        ];
+
+        return $this->respond($response, $status, $customMessage);
     }
 
     // --------------------------------------------------------------------
-    // Convenience Methods
+    // Response Helpers
     // --------------------------------------------------------------------
 
     /**
-     * Sets the date header
+     * Used after successfully creating a new resource.
      *
-     * @return $this
+     * @param array|string|null $data
+     *
+     * @return ResponseInterface
      */
-    public function setDate(DateTime $date)
+    protected function respondCreated($data = null, string $message = '')
     {
-        $date->setTimezone(new DateTimeZone('UTC'));
-
-        $this->setHeader('Date', $date->format('D, d M Y H:i:s') . ' GMT');
-
-        return $this;
+        return $this->respond($data, $this->codes['created'], $message);
     }
 
     /**
-     * Set the Link Header
+     * Used after a resource has been successfully deleted.
      *
-     * @see http://tools.ietf.org/html/rfc5988
+     * @param array|string|null $data
      *
-     * @return $this
-     *
-     * @todo Recommend moving to Pager
+     * @return ResponseInterface
      */
-    public function setLink(PagerInterface $pager)
+    protected function respondDeleted($data = null, string $message = '')
     {
-        $links    = '';
-        $previous = $pager->getPreviousPageURI();
-
-        if (is_string($previous) && $previous !== '') {
-            $links .= '<' . $pager->getPageURI($pager->getFirstPage()) . '>; rel="first",';
-            $links .= '<' . $previous . '>; rel="prev"';
-        }
-
-        $next = $pager->getNextPageURI();
-
-        if (is_string($next) && $next !== '' && is_string($previous) && $previous !== '') {
-            $links .= ',';
-        }
-
-        if (is_string($next) && $next !== '') {
-            $links .= '<' . $next . '>; rel="next",';
-            $links .= '<' . $pager->getPageURI($pager->getLastPage()) . '>; rel="last"';
-        }
-
-        $this->setHeader('Link', $links);
-
-        return $this;
+        return $this->respond($data, $this->codes['deleted'], $message);
     }
 
     /**
-     * Sets the Content Type header for this response with the mime type
-     * and, optionally, the charset.
+     * Used after a resource has been successfully updated.
      *
-     * @return $this
+     * @param array|string|null $data
+     *
+     * @return ResponseInterface
      */
-    public function setContentType(string $mime, string $charset = 'UTF-8')
+    protected function respondUpdated($data = null, string $message = '')
     {
-        // add charset attribute if not already there and provided as parm
-        if ((strpos($mime, 'charset=') < 1) && ($charset !== '')) {
-            $mime .= '; charset=' . $charset;
-        }
-
-        $this->removeHeader('Content-Type'); // replace existing content type
-        $this->setHeader('Content-Type', $mime);
-
-        return $this;
+        return $this->respond($data, $this->codes['updated'], $message);
     }
 
     /**
-     * Converts the $body into JSON and sets the Content Type header.
+     * Used after a command has been successfully executed but there is no
+     * meaningful reply to send back to the client.
      *
-     * @param array|object|string $body
-     *
-     * @return $this
+     * @return ResponseInterface
      */
-    public function setJSON($body, bool $unencoded = false)
+    protected function respondNoContent(string $message = 'No Content')
     {
-        $this->body = $this->formatBody($body, 'json' . ($unencoded ? '-unencoded' : ''));
-
-        return $this;
+        return $this->respond(null, $this->codes['no_content'], $message);
     }
 
     /**
-     * Returns the current body, converted to JSON is it isn't already.
+     * Used when the client is either didn't send authorization information,
+     * or had bad authorization credentials. User is encouraged to try again
+     * with the proper information.
+     *
+     * @return ResponseInterface
+     */
+    protected function failUnauthorized(string $description = 'Unauthorized', ?string $code = null, string $message = '')
+    {
+        return $this->fail($description, $this->codes['unauthorized'], $code, $message);
+    }
+
+    /**
+     * Used when access is always denied to this resource and no amount
+     * of trying again will help.
+     *
+     * @return ResponseInterface
+     */
+    protected function failForbidden(string $description = 'Forbidden', ?string $code = null, string $message = '')
+    {
+        return $this->fail($description, $this->codes['forbidden'], $code, $message);
+    }
+
+    /**
+     * Used when a specified resource cannot be found.
+     *
+     * @return ResponseInterface
+     */
+    protected function failNotFound(string $description = 'Not Found', ?string $code = null, string $message = '')
+    {
+        return $this->fail($description, $this->codes['resource_not_found'], $code, $message);
+    }
+
+    /**
+     * Used when the data provided by the client cannot be validated on one or more fields.
+     *
+     * @param list<string>|string $errors
+     *
+     * @return ResponseInterface
+     */
+    protected function failValidationErrors($errors, ?string $code = null, string $message = '')
+    {
+        return $this->fail($errors, $this->codes['invalid_data'], $code, $message);
+    }
+
+    /**
+     * Use when trying to create a new resource and it already exists.
+     *
+     * @return ResponseInterface
+     */
+    protected function failResourceExists(string $description = 'Conflict', ?string $code = null, string $message = '')
+    {
+        return $this->fail($description, $this->codes['resource_exists'], $code, $message);
+    }
+
+    /**
+     * Use when a resource was previously deleted. This is different than
+     * Not Found, because here we know the data previously existed, but is now gone,
+     * where Not Found means we simply cannot find any information about it.
+     *
+     * @return ResponseInterface
+     */
+    protected function failResourceGone(string $description = 'Gone', ?string $code = null, string $message = '')
+    {
+        return $this->fail($description, $this->codes['resource_gone'], $code, $message);
+    }
+
+    /**
+     * Used when the user has made too many requests for the resource recently.
+     *
+     * @return ResponseInterface
+     */
+    protected function failTooManyRequests(string $description = 'Too Many Requests', ?string $code = null, string $message = '')
+    {
+        return $this->fail($description, $this->codes['too_many_requests'], $code, $message);
+    }
+
+    /**
+     * Used when there is a server error.
+     *
+     * @param string      $description The error message to show the user.
+     * @param string|null $code        A custom, API-specific, error code.
+     * @param string      $message     A custom "reason" message to return.
+     */
+    protected function failServerError(string $description = 'Internal Server Error', ?string $code = null, string $message = ''): ResponseInterface
+    {
+        return $this->fail($description, $this->codes['server_error'], $code, $message);
+    }
+
+    // --------------------------------------------------------------------
+    // Utility Methods
+    // --------------------------------------------------------------------
+
+    /**
+     * Handles formatting a response. Currently, makes some heavy assumptions
+     * and needs updating! :)
+     *
+     * @param array|string|null $data
      *
      * @return string|null
-     *
-     * @throws InvalidArgumentException If the body property is not array.
      */
-    public function getJSON()
+    protected function format($data = null)
     {
-        $body = $this->body;
+        $format = service('format');
 
-        if ($this->bodyFormat !== 'json') {
-            $body = service('format')->getFormatter('application/json')->format($body);
-        }
+        $mime = ($this->format === null) ? $format->getConfig()->supportedResponseFormats[0]
+            : "application/{$this->format}";
 
-        return $body ?: null;
-    }
-
-    /**
-     * Converts $body into XML, and sets the correct Content-Type.
-     *
-     * @param array|string $body
-     *
-     * @return $this
-     */
-    public function setXML($body)
-    {
-        $this->body = $this->formatBody($body, 'xml');
-
-        return $this;
-    }
-
-    /**
-     * Retrieves the current body into XML and returns it.
-     *
-     * @return bool|string|null
-     *
-     * @throws InvalidArgumentException If the body property is not array.
-     */
-    public function getXML()
-    {
-        $body = $this->body;
-
-        if ($this->bodyFormat !== 'xml') {
-            $body = service('format')->getFormatter('application/xml')->format($body);
-        }
-
-        return $body;
-    }
-
-    /**
-     * Handles conversion of the data into the appropriate format,
-     * and sets the correct Content-Type header for our response.
-     *
-     * @param array|object|string $body
-     * @param string              $format Valid: json, xml
-     *
-     * @return false|string
-     *
-     * @throws InvalidArgumentException If the body property is not string or array.
-     */
-    protected function formatBody($body, string $format)
-    {
-        $this->bodyFormat = ($format === 'json-unencoded' ? 'json' : $format);
-        $mime             = "application/{$this->bodyFormat}";
-        $this->setContentType($mime);
-
-        // Nothing much to do for a string...
-        if (! is_string($body) || $format === 'json-unencoded') {
-            $body = service('format')->getFormatter($mime)->format($body);
-        }
-
-        return $body;
-    }
-
-    // --------------------------------------------------------------------
-    // Cache Control Methods
-    //
-    // http://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.9
-    // --------------------------------------------------------------------
-
-    /**
-     * Sets the appropriate headers to ensure this response
-     * is not cached by the browsers.
-     *
-     * @return $this
-     *
-     * @todo Recommend researching these directives, might need: 'private', 'no-transform', 'no-store', 'must-revalidate'
-     *
-     * @see DownloadResponse::noCache()
-     */
-    public function noCache()
-    {
-        $this->removeHeader('Cache-Control');
-        $this->setHeader('Cache-Control', ['no-store', 'max-age=0', 'no-cache']);
-
-        return $this;
-    }
-
-    /**
-     * A shortcut method that allows the developer to set all of the
-     * cache-control headers in one method call.
-     *
-     * The options array is used to provide the cache-control directives
-     * for the header. It might look something like:
-     *
-     *      $options = [
-     *          'max-age'  => 300,
-     *          's-maxage' => 900
-     *          'etag'     => 'abcde',
-     *      ];
-     *
-     * Typical options are:
-     *  - etag
-     *  - last-modified
-     *  - max-age
-     *  - s-maxage
-     *  - private
-     *  - public
-     *  - must-revalidate
-     *  - proxy-revalidate
-     *  - no-transform
-     *
-     * @return $this
-     */
-    public function setCache(array $options = [])
-    {
-        if ($options === []) {
-            return $this;
-        }
-
-        $this->removeHeader('Cache-Control');
-        $this->removeHeader('ETag');
-
-        // ETag
-        if (isset($options['etag'])) {
-            $this->setHeader('ETag', $options['etag']);
-            unset($options['etag']);
-        }
-
-        // Last Modified
-        if (isset($options['last-modified'])) {
-            $this->setLastModified($options['last-modified']);
-
-            unset($options['last-modified']);
-        }
-
-        $this->setHeader('Cache-Control', $options);
-
-        return $this;
-    }
-
-    /**
-     * Sets the Last-Modified date header.
-     *
-     * $date can be either a string representation of the date or,
-     * preferably, an instance of DateTime.
-     *
-     * @param DateTime|string $date
-     *
-     * @return $this
-     */
-    public function setLastModified($date)
-    {
-        if ($date instanceof DateTime) {
-            $date->setTimezone(new DateTimeZone('UTC'));
-            $this->setHeader('Last-Modified', $date->format('D, d M Y H:i:s') . ' GMT');
-        } elseif (is_string($date)) {
-            $this->setHeader('Last-Modified', $date);
-        }
-
-        return $this;
-    }
-
-    // --------------------------------------------------------------------
-    // Output Methods
-    // --------------------------------------------------------------------
-
-    /**
-     * Sends the output to the browser.
-     *
-     * @return $this
-     */
-    public function send()
-    {
-        // If we're enforcing a Content Security Policy,
-        // we need to give it a chance to build out it's headers.
-        if ($this->CSP->enabled()) {
-            $this->CSP->finalize($this);
-        } else {
-            $this->body = str_replace(['{csp-style-nonce}', '{csp-script-nonce}'], '', $this->body ?? '');
-        }
-
-        $this->sendHeaders();
-        $this->sendCookies();
-        $this->sendBody();
-
-        return $this;
-    }
-
-    /**
-     * Sends the headers of this HTTP response to the browser.
-     *
-     * @return $this
-     */
-    public function sendHeaders()
-    {
-        // Have the headers already been sent?
-        if ($this->pretend || headers_sent()) {
-            return $this;
-        }
-
-        // Per spec, MUST be sent with each request, if possible.
-        // http://www.w3.org/Protocols/rfc2616/rfc2616-sec13.html
-        if (! isset($this->headers['Date']) && PHP_SAPI !== 'cli-server') {
-            $this->setDate(DateTime::createFromFormat('U', (string) Time::now()->getTimestamp()));
-        }
-
-        // HTTP Status
-        header(sprintf('HTTP/%s %s %s', $this->getProtocolVersion(), $this->getStatusCode(), $this->getReasonPhrase()), true, $this->getStatusCode());
-
-        // Send all of our headers
-        foreach ($this->headers() as $name => $value) {
-            if ($value instanceof Header) {
-                header(
-                    $name . ': ' . $value->getValueLine(),
-                    true,
-                    $this->getStatusCode(),
-                );
-            } else {
-                $replace = true;
-
-                foreach ($value as $header) {
-                    header(
-                        $name . ': ' . $header->getValueLine(),
-                        $replace,
-                        $this->getStatusCode(),
-                    );
-                    $replace = false;
-                }
-            }
-        }
-
-        return $this;
-    }
-
-    /**
-     * Sends the Body of the message to the browser.
-     *
-     * @return $this
-     */
-    public function sendBody()
-    {
-        echo $this->body;
-
-        return $this;
-    }
-
-    /**
-     * Perform a redirect to a new URL, in two flavors: header or location.
-     *
-     * @param string   $uri  The URI to redirect to
-     * @param int|null $code The type of redirection, defaults to 302
-     *
-     * @return $this
-     *
-     * @throws HTTPException For invalid status code.
-     */
-    public function redirect(string $uri, string $method = 'auto', ?int $code = null)
-    {
-        // IIS environment likely? Use 'refresh' for better compatibility
+        // Determine correct response type through content negotiation if not explicitly declared
         if (
-            $method === 'auto'
-            && isset($_SERVER['SERVER_SOFTWARE'])
-            && str_contains($_SERVER['SERVER_SOFTWARE'], 'Microsoft-IIS')
+            ! in_array($this->format, ['json', 'xml'], true)
+            && $this->request instanceof IncomingRequest
         ) {
-            $method = 'refresh';
-        } elseif ($method !== 'refresh' && $code === null) {
-            // override status code for HTTP/1.1 & higher
-            if (
-                isset($_SERVER['SERVER_PROTOCOL'], $_SERVER['REQUEST_METHOD'])
-                && $this->getProtocolVersion() >= 1.1
-            ) {
-                if ($_SERVER['REQUEST_METHOD'] === Method::GET) {
-                    $code = 302;
-                } elseif (in_array($_SERVER['REQUEST_METHOD'], [Method::POST, Method::PUT, Method::DELETE], true)) {
-                    // reference: https://en.wikipedia.org/wiki/Post/Redirect/Get
-                    $code = 303;
-                } else {
-                    $code = 307;
-                }
-            }
+            $mime = $this->request->negotiate(
+                'media',
+                $format->getConfig()->supportedResponseFormats,
+                false,
+            );
         }
 
-        if ($code === null) {
-            $code = 302;
+        $this->response->setContentType($mime);
+
+        // if we don't have a formatter, make one
+        if (! isset($this->formatter)) {
+            // if no formatter, use the default
+            $this->formatter = $format->getFormatter($mime);
         }
 
-        match ($method) {
-            'refresh' => $this->setHeader('Refresh', '0;url=' . $uri),
-            default   => $this->setHeader('Location', $uri),
-        };
+        $asHtml = $this->stringAsHtml ?? false;
 
-        $this->setStatusCode($code);
+        // Returns as HTML.
+        if (
+            ($mime === 'application/json' && $asHtml && is_string($data))
+            || ($mime !== 'application/json' && is_string($data))
+        ) {
+            // The content type should be text/... and not application/...
+            $contentType = $this->response->getHeaderLine('Content-Type');
+            $contentType = str_replace('application/json', 'text/html', $contentType);
+            $contentType = str_replace('application/', 'text/', $contentType);
+            $this->response->setContentType($contentType);
+            $this->format = 'html';
 
-        return $this;
+            return $data;
+        }
+
+        if ($mime !== 'application/json') {
+            // Recursively convert objects into associative arrays
+            // Conversion not required for JSONFormatter
+            $data = json_decode(json_encode($data), true);
+        }
+
+        return $this->formatter->format($data);
     }
 
     /**
-     * Set a cookie
+     * Sets the format the response should be in.
      *
-     * Accepts an arbitrary number of binds (up to 7) or an associative
-     * array in the first parameter containing all the values.
-     *
-     * @param array|Cookie|string $name     Cookie name / array containing binds / Cookie object
-     * @param string              $value    Cookie value
-     * @param int                 $expire   Cookie expiration time in seconds
-     * @param string              $domain   Cookie domain (e.g.: '.yourdomain.com')
-     * @param string              $path     Cookie path (default: '/')
-     * @param string              $prefix   Cookie name prefix ('': the default prefix)
-     * @param bool|null           $secure   Whether to only transfer cookies via SSL
-     * @param bool|null           $httponly Whether only make the cookie accessible via HTTP (no javascript)
-     * @param string|null         $samesite
+     * @param         string|null  $format Response format
+     * @phpstan-param 'json'|'xml' $format
      *
      * @return $this
      */
-    public function setCookie(
-        $name,
-        $value = '',
-        $expire = 0,
-        $domain = '',
-        $path = '/',
-        $prefix = '',
-        $secure = null,
-        $httponly = null,
-        $samesite = null,
-    ) {
-        if ($name instanceof Cookie) {
-            $this->cookieStore = $this->cookieStore->put($name);
-
-            return $this;
-        }
-
-        $cookieConfig = config(CookieConfig::class);
-
-        $secure ??= $cookieConfig->secure;
-        $httponly ??= $cookieConfig->httponly;
-        $samesite ??= $cookieConfig->samesite;
-
-        if (is_array($name)) {
-            // always leave 'name' in last place, as the loop will break otherwise, due to ${$item}
-            foreach (['samesite', 'value', 'expire', 'domain', 'path', 'prefix', 'secure', 'httponly', 'name'] as $item) {
-                if (isset($name[$item])) {
-                    ${$item} = $name[$item];
-                }
-            }
-        }
-
-        if (is_numeric($expire)) {
-            $expire = $expire > 0 ? Time::now()->getTimestamp() + $expire : 0;
-        }
-
-        $cookie = new Cookie($name, $value, [
-            'expires'  => $expire ?: 0,
-            'domain'   => $domain,
-            'path'     => $path,
-            'prefix'   => $prefix,
-            'secure'   => $secure,
-            'httponly' => $httponly,
-            'samesite' => $samesite ?? '',
-        ]);
-
-        $this->cookieStore = $this->cookieStore->put($cookie);
+    protected function setResponseFormat(?string $format = null)
+    {
+        $this->format = ($format === null) ? null : strtolower($format);
 
         return $this;
-    }
-
-    /**
-     * Returns the `CookieStore` instance.
-     *
-     * @return CookieStore
-     */
-    public function getCookieStore()
-    {
-        return $this->cookieStore;
-    }
-
-    /**
-     * Checks to see if the Response has a specified cookie or not.
-     */
-    public function hasCookie(string $name, ?string $value = null, string $prefix = ''): bool
-    {
-        $prefix = $prefix !== '' ? $prefix : Cookie::setDefaults()['prefix']; // to retain BC
-
-        return $this->cookieStore->has($name, $prefix, $value);
-    }
-
-    /**
-     * Returns the cookie
-     *
-     * @param string $prefix Cookie prefix.
-     *                       '': the default prefix
-     *
-     * @return array<string, Cookie>|Cookie|null
-     */
-    public function getCookie(?string $name = null, string $prefix = '')
-    {
-        if ((string) $name === '') {
-            return $this->cookieStore->display();
-        }
-
-        try {
-            $prefix = $prefix !== '' ? $prefix : Cookie::setDefaults()['prefix']; // to retain BC
-
-            return $this->cookieStore->get($name, $prefix);
-        } catch (CookieException $e) {
-            log_message('error', (string) $e);
-
-            return null;
-        }
-    }
-
-    /**
-     * Sets a cookie to be deleted when the response is sent.
-     *
-     * @return $this
-     */
-    public function deleteCookie(string $name = '', string $domain = '', string $path = '/', string $prefix = '')
-    {
-        if ($name === '') {
-            return $this;
-        }
-
-        $prefix = $prefix !== '' ? $prefix : Cookie::setDefaults()['prefix']; // to retain BC
-
-        $prefixed = $prefix . $name;
-        $store    = $this->cookieStore;
-        $found    = false;
-
-        /** @var Cookie $cookie */
-        foreach ($store as $cookie) {
-            if ($cookie->getPrefixedName() === $prefixed) {
-                if ($domain !== $cookie->getDomain()) {
-                    continue;
-                }
-
-                if ($path !== $cookie->getPath()) {
-                    continue;
-                }
-
-                $cookie = $cookie->withValue('')->withExpired();
-                $found  = true;
-
-                $this->cookieStore = $store->put($cookie);
-                break;
-            }
-        }
-
-        if (! $found) {
-            $this->setCookie($name, '', 0, $domain, $path, $prefix);
-        }
-
-        return $this;
-    }
-
-    /**
-     * Returns all cookies currently set.
-     *
-     * @return array<string, Cookie>
-     */
-    public function getCookies()
-    {
-        return $this->cookieStore->display();
-    }
-
-    /**
-     * Actually sets the cookies.
-     *
-     * @return void
-     */
-    protected function sendCookies()
-    {
-        if ($this->pretend) {
-            return;
-        }
-
-        $this->dispatchCookies();
-    }
-
-    private function dispatchCookies(): void
-    {
-        /** @var IncomingRequest $request */
-        $request = service('request');
-
-        foreach ($this->cookieStore->display() as $cookie) {
-            if ($cookie->isSecure() && ! $request->isSecure()) {
-                throw SecurityException::forInsecureCookie();
-            }
-
-            $name    = $cookie->getPrefixedName();
-            $value   = $cookie->getValue();
-            $options = $cookie->getOptions();
-
-            if ($cookie->isRaw()) {
-                $this->doSetRawCookie($name, $value, $options);
-            } else {
-                $this->doSetCookie($name, $value, $options);
-            }
-        }
-
-        $this->cookieStore->clear();
-    }
-
-    /**
-     * Extracted call to `setrawcookie()` in order to run unit tests on it.
-     *
-     * @codeCoverageIgnore
-     */
-    private function doSetRawCookie(string $name, string $value, array $options): void
-    {
-        setrawcookie($name, $value, $options);
-    }
-
-    /**
-     * Extracted call to `setcookie()` in order to run unit tests on it.
-     *
-     * @codeCoverageIgnore
-     */
-    private function doSetCookie(string $name, string $value, array $options): void
-    {
-        setcookie($name, $value, $options);
-    }
-
-    /**
-     * Force a download.
-     *
-     * Generates the headers that force a download to happen. And
-     * sends the file to the browser.
-     *
-     * @param string      $filename The name you want the downloaded file to be named
-     *                              or the path to the file to send
-     * @param string|null $data     The data to be downloaded. Set null if the $filename is the file path
-     * @param bool        $setMime  Whether to try and send the actual MIME type
-     *
-     * @return DownloadResponse|null
-     */
-    public function download(string $filename = '', $data = '', bool $setMime = false)
-    {
-        if ($filename === '' || $data === '') {
-            return null;
-        }
-
-        $filepath = '';
-        if ($data === null) {
-            $filepath = $filename;
-            $filename = explode('/', str_replace(DIRECTORY_SEPARATOR, '/', $filename));
-            $filename = end($filename);
-        }
-
-        $response = new DownloadResponse($filename, $setMime);
-
-        if ($filepath !== '') {
-            $response->setFilePath($filepath);
-        } elseif ($data !== null) {
-            $response->setBinary($data);
-        }
-
-        return $response;
-    }
-
-    public function getCSP(): ContentSecurityPolicy
-    {
-        return $this->CSP;
     }
 }

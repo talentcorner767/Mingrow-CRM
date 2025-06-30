@@ -11,328 +11,420 @@ declare(strict_types=1);
  * the LICENSE file that was distributed with this source code.
  */
 
-namespace CodeIgniter\Session\Handlers;
+namespace CodeIgniter\Cache\Handlers;
 
+use CodeIgniter\Cache\Exceptions\CacheException;
 use CodeIgniter\I18n\Time;
-use CodeIgniter\Session\Exceptions\SessionException;
-use Config\Session as SessionConfig;
-use ReturnTypeWillChange;
+use Config\Cache;
+use Throwable;
 
 /**
- * Session handler using file system for storage
+ * File system cache handler
+ *
+ * @see \CodeIgniter\Cache\Handlers\FileHandlerTest
  */
 class FileHandler extends BaseHandler
 {
     /**
-     * Where to save the session files to.
+     * Maximum key length.
+     */
+    public const MAX_KEY_LENGTH = 255;
+
+    /**
+     * Where to store cached files on the disk.
      *
      * @var string
      */
-    protected $savePath;
+    protected $path;
 
     /**
-     * The file handle
+     * Mode for the stored files.
+     * Must be chmod-safe (octal).
      *
-     * @var resource|null
+     * @var int
+     *
+     * @see https://www.php.net/manual/en/function.chmod.php
      */
-    protected $fileHandle;
+    protected $mode;
 
     /**
-     * File Name
+     * Note: Use `CacheFactory::getHandler()` to instantiate.
      *
-     * @var string
+     * @throws CacheException
      */
-    protected $filePath;
-
-    /**
-     * Whether this is a new file.
-     *
-     * @var bool
-     */
-    protected $fileNew;
-
-    /**
-     * Whether IP addresses should be matched.
-     *
-     * @var bool
-     */
-    protected $matchIP = false;
-
-    /**
-     * Regex of session ID
-     *
-     * @var string
-     */
-    protected $sessionIDRegex = '';
-
-    public function __construct(SessionConfig $config, string $ipAddress)
+    public function __construct(Cache $config)
     {
-        parent::__construct($config, $ipAddress);
+        $this->path = ! empty($config->file['storePath']) ? $config->file['storePath'] : WRITEPATH . 'cache';
+        $this->path = rtrim($this->path, '/') . '/';
 
-        if (! empty($this->savePath)) {
-            $this->savePath = rtrim($this->savePath, '/\\');
-            ini_set('session.save_path', $this->savePath);
-        } else {
-            $sessionPath = rtrim(ini_get('session.save_path'), '/\\');
-
-            if ($sessionPath === '') {
-                $sessionPath = WRITEPATH . 'session';
-            }
-
-            $this->savePath = $sessionPath;
+        if (! is_really_writable($this->path)) {
+            throw CacheException::forUnableToWrite($this->path);
         }
 
-        $this->configureSessionIDRegex();
+        $this->mode   = $config->file['mode'] ?? 0640;
+        $this->prefix = $config->prefix;
+
+        helper('filesystem');
     }
 
     /**
-     * Re-initialize existing session, or creates a new one.
-     *
-     * @param string $path The path where to store/retrieve the session
-     * @param string $name The session name
-     *
-     * @throws SessionException
+     * {@inheritDoc}
      */
-    public function open($path, $name): bool
+    public function initialize()
     {
-        if (! is_dir($path) && ! mkdir($path, 0700, true)) {
-            throw SessionException::forInvalidSavePath($this->savePath);
-        }
-
-        if (! is_writable($path)) {
-            throw SessionException::forWriteProtectedSavePath($this->savePath);
-        }
-
-        $this->savePath = $path;
-
-        // we'll use the session name as prefix to avoid collisions
-        $this->filePath = $this->savePath . '/' . $name . ($this->matchIP ? md5($this->ipAddress) : '');
-
-        return true;
     }
 
     /**
-     * Reads the session data from the session storage, and returns the results.
-     *
-     * @param string $id The session ID
-     *
-     * @return false|string Returns an encoded string of the read data.
-     *                      If nothing was read, it must return false.
+     * {@inheritDoc}
      */
-    #[ReturnTypeWillChange]
-    public function read($id)
+    public function get(string $key)
     {
-        // This might seem weird, but PHP 5.6 introduced session_reset(),
-        // which re-reads session data
-        if ($this->fileHandle === null) {
-            $this->fileNew = ! is_file($this->filePath . $id);
+        $key  = static::validateKey($key, $this->prefix);
+        $data = $this->getItem($key);
 
-            if (($this->fileHandle = fopen($this->filePath . $id, 'c+b')) === false) {
-                $this->logger->error("Session: Unable to open file '" . $this->filePath . $id . "'.");
-
-                return false;
-            }
-
-            if (flock($this->fileHandle, LOCK_EX) === false) {
-                $this->logger->error("Session: Unable to obtain lock for file '" . $this->filePath . $id . "'.");
-                fclose($this->fileHandle);
-                $this->fileHandle = null;
-
-                return false;
-            }
-
-            if (! isset($this->sessionID)) {
-                $this->sessionID = $id;
-            }
-
-            if ($this->fileNew) {
-                chmod($this->filePath . $id, 0600);
-                $this->fingerprint = md5('');
-
-                return '';
-            }
-        } else {
-            rewind($this->fileHandle);
-        }
-
-        $data   = '';
-        $buffer = 0;
-        clearstatcache(); // Address https://github.com/codeigniter4/CodeIgniter4/issues/2056
-
-        for ($read = 0, $length = filesize($this->filePath . $id); $read < $length; $read += strlen($buffer)) {
-            if (($buffer = fread($this->fileHandle, $length - $read)) === false) {
-                break;
-            }
-
-            $data .= $buffer;
-        }
-
-        $this->fingerprint = md5($data);
-
-        return $data;
+        return is_array($data) ? $data['data'] : null;
     }
 
     /**
-     * Writes the session data to the session storage.
-     *
-     * @param string $id   The session ID
-     * @param string $data The encoded session data
+     * {@inheritDoc}
      */
-    public function write($id, $data): bool
+    public function save(string $key, $value, int $ttl = 60)
     {
-        // If the two IDs don't match, we have a session_regenerate_id() call
-        if ($id !== $this->sessionID) {
-            $this->sessionID = $id;
-        }
+        $key = static::validateKey($key, $this->prefix);
 
-        if (! is_resource($this->fileHandle)) {
-            return false;
-        }
+        $contents = [
+            'time' => Time::now()->getTimestamp(),
+            'ttl'  => $ttl,
+            'data' => $value,
+        ];
 
-        if ($this->fingerprint === md5($data)) {
-            return ($this->fileNew) ? true : touch($this->filePath . $id);
-        }
+        if (write_file($this->path . $key, serialize($contents))) {
+            try {
+                chmod($this->path . $key, $this->mode);
 
-        if (! $this->fileNew) {
-            ftruncate($this->fileHandle, 0);
-            rewind($this->fileHandle);
-        }
-
-        if (($length = strlen($data)) > 0) {
-            $result = null;
-
-            $written = 0;
-
-            for (; $written < $length; $written += $result) {
-                if (($result = fwrite($this->fileHandle, substr($data, $written))) === false) {
-                    break;
-                }
+                // @codeCoverageIgnoreStart
+            } catch (Throwable $e) {
+                log_message('debug', 'Failed to set mode on cache file: ' . $e);
+                // @codeCoverageIgnoreEnd
             }
 
-            if (! is_int($result)) {
-                $this->fingerprint = md5(substr($data, 0, $written));
-                $this->logger->error('Session: Unable to write data.');
-
-                return false;
-            }
-        }
-
-        $this->fingerprint = md5($data);
-
-        return true;
-    }
-
-    /**
-     * Closes the current session.
-     */
-    public function close(): bool
-    {
-        if (is_resource($this->fileHandle)) {
-            flock($this->fileHandle, LOCK_UN);
-            fclose($this->fileHandle);
-
-            $this->fileHandle = null;
-            $this->fileNew    = false;
-        }
-
-        return true;
-    }
-
-    /**
-     * Destroys a session
-     *
-     * @param string $id The session ID being destroyed
-     */
-    public function destroy($id): bool
-    {
-        if ($this->close()) {
-            return is_file($this->filePath . $id)
-                ? (unlink($this->filePath . $id) && $this->destroyCookie())
-                : true;
-        }
-
-        if ($this->filePath !== null) {
-            clearstatcache();
-
-            return is_file($this->filePath . $id)
-                ? (unlink($this->filePath . $id) && $this->destroyCookie())
-                : true;
+            return true;
         }
 
         return false;
     }
 
     /**
-     * Cleans up expired sessions.
-     *
-     * @param int $max_lifetime Sessions that have not updated
-     *                          for the last max_lifetime seconds will be removed.
-     *
-     * @return false|int Returns the number of deleted sessions on success, or false on failure.
+     * {@inheritDoc}
      */
-    #[ReturnTypeWillChange]
-    public function gc($max_lifetime)
+    public function delete(string $key)
     {
-        if (! is_dir($this->savePath) || ($directory = opendir($this->savePath)) === false) {
-            $this->logger->debug("Session: Garbage collector couldn't list files under directory '" . $this->savePath . "'.");
+        $key = static::validateKey($key, $this->prefix);
+
+        return is_file($this->path . $key) && unlink($this->path . $key);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * @return int
+     */
+    public function deleteMatching(string $pattern)
+    {
+        $deleted = 0;
+
+        foreach (glob($this->path . $pattern, GLOB_NOSORT) as $filename) {
+            if (is_file($filename) && @unlink($filename)) {
+                $deleted++;
+            }
+        }
+
+        return $deleted;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function increment(string $key, int $offset = 1)
+    {
+        $prefixedKey = static::validateKey($key, $this->prefix);
+        $tmp         = $this->getItem($prefixedKey);
+
+        if ($tmp === false) {
+            $tmp = ['data' => 0, 'ttl' => 60];
+        }
+
+        ['data' => $value, 'ttl' => $ttl] = $tmp;
+
+        if (! is_int($value)) {
+            return false;
+        }
+
+        $value += $offset;
+
+        return $this->save($key, $value, $ttl) ? $value : false;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function decrement(string $key, int $offset = 1)
+    {
+        return $this->increment($key, -$offset);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function clean()
+    {
+        return delete_files($this->path, false, true);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function getCacheInfo()
+    {
+        return get_dir_file_info($this->path);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function getMetaData(string $key)
+    {
+        $key = static::validateKey($key, $this->prefix);
+
+        if (false === $data = $this->getItem($key)) {
+            return false; // @TODO This will return null in a future release
+        }
+
+        return [
+            'expire' => $data['ttl'] > 0 ? $data['time'] + $data['ttl'] : null,
+            'mtime'  => filemtime($this->path . $key),
+            'data'   => $data['data'],
+        ];
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function isSupported(): bool
+    {
+        return is_writable($this->path);
+    }
+
+    /**
+     * Does the heavy lifting of actually retrieving the file and
+     * verifying it's age.
+     *
+     * @return array{data: mixed, ttl: int, time: int}|false
+     */
+    protected function getItem(string $filename)
+    {
+        if (! is_file($this->path . $filename)) {
+            return false;
+        }
+
+        $data = @unserialize(file_get_contents($this->path . $filename));
+
+        if (! is_array($data)) {
+            return false;
+        }
+
+        if (! isset($data['ttl']) || ! is_int($data['ttl'])) {
+            return false;
+        }
+
+        if (! isset($data['time']) || ! is_int($data['time'])) {
+            return false;
+        }
+
+        if ($data['ttl'] > 0 && Time::now()->getTimestamp() > $data['time'] + $data['ttl']) {
+            @unlink($this->path . $filename);
 
             return false;
         }
 
-        $ts = Time::now()->getTimestamp() - $max_lifetime;
-
-        $pattern = $this->matchIP === true ? '[0-9a-f]{32}' : '';
-
-        $pattern = sprintf(
-            '#\A%s' . $pattern . $this->sessionIDRegex . '\z#',
-            preg_quote($this->cookieName, '#'),
-        );
-
-        $collected = 0;
-
-        while (($file = readdir($directory)) !== false) {
-            // If the filename doesn't match this pattern, it's either not a session file or is not ours
-            if (preg_match($pattern, $file) !== 1
-                || ! is_file($this->savePath . DIRECTORY_SEPARATOR . $file)
-                || ($mtime = filemtime($this->savePath . DIRECTORY_SEPARATOR . $file)) === false
-                || $mtime > $ts
-            ) {
-                continue;
-            }
-
-            unlink($this->savePath . DIRECTORY_SEPARATOR . $file);
-            $collected++;
-        }
-
-        closedir($directory);
-
-        return $collected;
+        return $data;
     }
 
     /**
-     * Configure Session ID regular expression
+     * Writes a file to disk, or returns false if not successful.
      *
-     * To make life easier, we force the PHP defaults. Because PHP9 forces them.
+     * @deprecated 4.6.1 Use `write_file()` instead.
      *
-     * @see https://wiki.php.net/rfc/deprecations_php_8_4#sessionsid_length_and_sessionsid_bits_per_character
+     * @param string $path
+     * @param string $data
+     * @param string $mode
      *
-     * @return void
+     * @return bool
      */
-    protected function configureSessionIDRegex()
+    protected function writeFile($path, $data, $mode = 'wb')
     {
-        $bitsPerCharacter = (int) ini_get('session.sid_bits_per_character');
-        $sidLength        = (int) ini_get('session.sid_length');
+        if (($fp = @fopen($path, $mode)) === false) {
+            return false;
+        }
 
-        // We force the PHP defaults.
-        if (PHP_VERSION_ID < 90000) {
-            if ($bitsPerCharacter !== 4) {
-                ini_set('session.sid_bits_per_character', '4');
-            }
-            if ($sidLength !== 32) {
-                ini_set('session.sid_length', '32');
+        flock($fp, LOCK_EX);
+
+        $result = 0;
+
+        for ($written = 0, $length = strlen($data); $written < $length; $written += $result) {
+            if (($result = fwrite($fp, substr($data, $written))) === false) {
+                break;
             }
         }
 
-        $this->sessionIDRegex = '[0-9a-f]{32}';
+        flock($fp, LOCK_UN);
+        fclose($fp);
+
+        return is_int($result);
+    }
+
+    /**
+     * Deletes all files contained in the supplied directory path.
+     * Files must be writable or owned by the system in order to be deleted.
+     * If the second parameter is set to TRUE, any directories contained
+     * within the supplied base directory will be nuked as well.
+     *
+     * @deprecated 4.6.1 Use `delete_files()` instead.
+     *
+     * @param string $path   File path
+     * @param bool   $delDir Whether to delete any directories found in the path
+     * @param bool   $htdocs Whether to skip deleting .htaccess and index page files
+     * @param int    $_level Current directory depth level (default: 0; internal use only)
+     */
+    protected function deleteFiles(string $path, bool $delDir = false, bool $htdocs = false, int $_level = 0): bool
+    {
+        // Trim the trailing slash
+        $path = rtrim($path, '/\\');
+
+        if (! $currentDir = @opendir($path)) {
+            return false;
+        }
+
+        while (false !== ($filename = @readdir($currentDir))) {
+            if ($filename !== '.' && $filename !== '..') {
+                if (is_dir($path . DIRECTORY_SEPARATOR . $filename) && $filename[0] !== '.') {
+                    $this->deleteFiles($path . DIRECTORY_SEPARATOR . $filename, $delDir, $htdocs, $_level + 1);
+                } elseif (! $htdocs || preg_match('/^(\.htaccess|index\.(html|htm|php)|web\.config)$/i', $filename) !== 1) {
+                    @unlink($path . DIRECTORY_SEPARATOR . $filename);
+                }
+            }
+        }
+
+        closedir($currentDir);
+
+        return ($delDir && $_level > 0) ? @rmdir($path) : true;
+    }
+
+    /**
+     * Reads the specified directory and builds an array containing the filenames,
+     * filesize, dates, and permissions
+     *
+     * Any sub-folders contained within the specified path are read as well.
+     *
+     * @deprecated 4.6.1 Use `get_dir_file_info()` instead.
+     *
+     * @param string $sourceDir    Path to source
+     * @param bool   $topLevelOnly Look only at the top level directory specified?
+     * @param bool   $_recursion   Internal variable to determine recursion status - do not use in calls
+     *
+     * @return array|false
+     */
+    protected function getDirFileInfo(string $sourceDir, bool $topLevelOnly = true, bool $_recursion = false)
+    {
+        static $_filedata = [];
+        $relativePath     = $sourceDir;
+
+        if ($fp = @opendir($sourceDir)) {
+            // reset the array and make sure $sourceDir has a trailing slash on the initial call
+            if ($_recursion === false) {
+                $_filedata = [];
+                $sourceDir = rtrim(realpath($sourceDir) ?: $sourceDir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+            }
+
+            // Used to be foreach (scandir($sourceDir, 1) as $file), but scandir() is simply not as fast
+            while (false !== ($file = readdir($fp))) {
+                if (is_dir($sourceDir . $file) && $file[0] !== '.' && $topLevelOnly === false) {
+                    $this->getDirFileInfo($sourceDir . $file . DIRECTORY_SEPARATOR, $topLevelOnly, true);
+                } elseif (! is_dir($sourceDir . $file) && $file[0] !== '.') {
+                    $_filedata[$file]                  = $this->getFileInfo($sourceDir . $file);
+                    $_filedata[$file]['relative_path'] = $relativePath;
+                }
+            }
+
+            closedir($fp);
+
+            return $_filedata;
+        }
+
+        return false;
+    }
+
+    /**
+     * Given a file and path, returns the name, path, size, date modified
+     * Second parameter allows you to explicitly declare what information you want returned
+     * Options are: name, server_path, size, date, readable, writable, executable, fileperms
+     * Returns FALSE if the file cannot be found.
+     *
+     * @deprecated 4.6.1 Use `get_file_info()` instead.
+     *
+     * @param string       $file           Path to file
+     * @param array|string $returnedValues Array or comma separated string of information returned
+     *
+     * @return array|false
+     */
+    protected function getFileInfo(string $file, $returnedValues = ['name', 'server_path', 'size', 'date'])
+    {
+        if (! is_file($file)) {
+            return false;
+        }
+
+        if (is_string($returnedValues)) {
+            $returnedValues = explode(',', $returnedValues);
+        }
+
+        $fileInfo = [];
+
+        foreach ($returnedValues as $key) {
+            switch ($key) {
+                case 'name':
+                    $fileInfo['name'] = basename($file);
+                    break;
+
+                case 'server_path':
+                    $fileInfo['server_path'] = $file;
+                    break;
+
+                case 'size':
+                    $fileInfo['size'] = filesize($file);
+                    break;
+
+                case 'date':
+                    $fileInfo['date'] = filemtime($file);
+                    break;
+
+                case 'readable':
+                    $fileInfo['readable'] = is_readable($file);
+                    break;
+
+                case 'writable':
+                    $fileInfo['writable'] = is_writable($file);
+                    break;
+
+                case 'executable':
+                    $fileInfo['executable'] = is_executable($file);
+                    break;
+
+                case 'fileperms':
+                    $fileInfo['fileperms'] = fileperms($file);
+                    break;
+            }
+        }
+
+        return $fileInfo;
     }
 }

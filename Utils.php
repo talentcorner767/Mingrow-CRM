@@ -11,29 +11,22 @@ declare(strict_types=1);
  * the LICENSE file that was distributed with this source code.
  */
 
-namespace CodeIgniter\Database\Postgre;
+namespace CodeIgniter\Database\SQLite3;
 
 use CodeIgniter\Database\BaseUtils;
 use CodeIgniter\Database\Exceptions\DatabaseException;
 
 /**
- * Utils for Postgre
+ * Utils for SQLite3
  */
 class Utils extends BaseUtils
 {
-    /**
-     * List databases statement
-     *
-     * @var string
-     */
-    protected $listDatabases = 'SELECT datname FROM pg_database';
-
     /**
      * OPTIMIZE TABLE statement
      *
      * @var string
      */
-    protected $optimizeTable = 'REINDEX TABLE %s';
+    protected $optimizeTable = 'REINDEX %s';
 
     /**
      * Platform dependent version of the backup function.

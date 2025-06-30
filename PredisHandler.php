@@ -16,15 +16,17 @@ namespace CodeIgniter\Cache\Handlers;
 use CodeIgniter\Exceptions\CriticalError;
 use CodeIgniter\I18n\Time;
 use Config\Cache;
-use Redis;
-use RedisException;
+use Exception;
+use Predis\Client;
+use Predis\Collection\Iterator\Keyspace;
+use Predis\Response\Status;
 
 /**
- * Redis cache handler
+ * Predis cache handler
  *
- * @see \CodeIgniter\Cache\Handlers\RedisHandlerTest
+ * @see \CodeIgniter\Cache\Handlers\PredisHandlerTest
  */
-class RedisHandler extends BaseHandler
+class PredisHandler extends BaseHandler
 {
     /**
      * Default config
@@ -32,17 +34,17 @@ class RedisHandler extends BaseHandler
      * @var array
      */
     protected $config = [
+        'scheme'   => 'tcp',
         'host'     => '127.0.0.1',
         'password' => null,
         'port'     => 6379,
         'timeout'  => 0,
-        'database' => 0,
     ];
 
     /**
-     * Redis connection
+     * Predis connection
      *
-     * @var Redis|null
+     * @var Client
      */
     protected $redis;
 
@@ -53,16 +55,8 @@ class RedisHandler extends BaseHandler
     {
         $this->prefix = $config->prefix;
 
-        $this->config = array_merge($this->config, $config->redis);
-    }
-
-    /**
-     * Closes the connection to Redis if present.
-     */
-    public function __destruct()
-    {
-        if (isset($this->redis)) {
-            $this->redis->close();
+        if (isset($config->redis)) {
+            $this->config = array_merge($this->config, $config->redis);
         }
     }
 
@@ -71,34 +65,11 @@ class RedisHandler extends BaseHandler
      */
     public function initialize()
     {
-        $config = $this->config;
-
-        $this->redis = new Redis();
-
         try {
-            // Note:: If Redis is your primary cache choice, and it is "offline", every page load will end up been delayed by the timeout duration.
-            // I feel like some sort of temporary flag should be set, to indicate that we think Redis is "offline", allowing us to bypass the timeout for a set period of time.
-
-            if (! $this->redis->connect($config['host'], ($config['host'][0] === '/' ? 0 : $config['port']), $config['timeout'])) {
-                // Note:: I'm unsure if log_message() is necessary, however I'm not 100% comfortable removing it.
-                log_message('error', 'Cache: Redis connection failed. Check your configuration.');
-
-                throw new CriticalError('Cache: Redis connection failed. Check your configuration.');
-            }
-
-            if (isset($config['password']) && ! $this->redis->auth($config['password'])) {
-                log_message('error', 'Cache: Redis authentication failed.');
-
-                throw new CriticalError('Cache: Redis authentication failed.');
-            }
-
-            if (isset($config['database']) && ! $this->redis->select($config['database'])) {
-                log_message('error', 'Cache: Redis select database failed.');
-
-                throw new CriticalError('Cache: Redis select database failed.');
-            }
-        } catch (RedisException $e) {
-            throw new CriticalError('Cache: RedisException occurred with message (' . $e->getMessage() . ').');
+            $this->redis = new Client($this->config, ['prefix' => $this->prefix]);
+            $this->redis->time();
+        } catch (Exception $e) {
+            throw new CriticalError('Cache: Predis connection refused (' . $e->getMessage() . ').');
         }
     }
 
@@ -107,8 +78,12 @@ class RedisHandler extends BaseHandler
      */
     public function get(string $key)
     {
-        $key  = static::validateKey($key, $this->prefix);
-        $data = $this->redis->hMget($key, ['__ci_type', '__ci_value']);
+        $key = static::validateKey($key);
+
+        $data = array_combine(
+            ['__ci_type', '__ci_value'],
+            $this->redis->hmget($key, ['__ci_type', '__ci_value']),
+        );
 
         if (! isset($data['__ci_type'], $data['__ci_value']) || $data['__ci_value'] === false) {
             return null;
@@ -127,7 +102,7 @@ class RedisHandler extends BaseHandler
      */
     public function save(string $key, $value, int $ttl = 60)
     {
-        $key = static::validateKey($key, $this->prefix);
+        $key = static::validateKey($key);
 
         switch ($dataType = gettype($value)) {
             case 'array':
@@ -147,12 +122,12 @@ class RedisHandler extends BaseHandler
                 return false;
         }
 
-        if (! $this->redis->hMset($key, ['__ci_type' => $dataType, '__ci_value' => $value])) {
+        if (! $this->redis->hmset($key, ['__ci_type' => $dataType, '__ci_value' => $value]) instanceof Status) {
             return false;
         }
 
         if ($ttl !== 0) {
-            $this->redis->expireAt($key, Time::now()->getTimestamp() + $ttl);
+            $this->redis->expireat($key, Time::now()->getTimestamp() + $ttl);
         }
 
         return true;
@@ -163,7 +138,7 @@ class RedisHandler extends BaseHandler
      */
     public function delete(string $key)
     {
-        $key = static::validateKey($key, $this->prefix);
+        $key = static::validateKey($key);
 
         return $this->redis->del($key) === 1;
     }
@@ -175,19 +150,11 @@ class RedisHandler extends BaseHandler
      */
     public function deleteMatching(string $pattern)
     {
-        /** @var list<string> $matchedKeys */
         $matchedKeys = [];
-        $pattern     = static::validateKey($pattern, $this->prefix);
-        $iterator    = null;
 
-        do {
-            /** @var false|list<string> $keys */
-            $keys = $this->redis->scan($iterator, $pattern);
-
-            if (is_array($keys)) {
-                $matchedKeys = [...$matchedKeys, ...$keys];
-            }
-        } while ($iterator > 0);
+        foreach (new Keyspace($this->redis, $pattern) as $key) {
+            $matchedKeys[] = $key;
+        }
 
         return $this->redis->del($matchedKeys);
     }
@@ -197,9 +164,9 @@ class RedisHandler extends BaseHandler
      */
     public function increment(string $key, int $offset = 1)
     {
-        $key = static::validateKey($key, $this->prefix);
+        $key = static::validateKey($key);
 
-        return $this->redis->hIncrBy($key, '__ci_value', $offset);
+        return $this->redis->hincrby($key, 'data', $offset);
     }
 
     /**
@@ -207,7 +174,9 @@ class RedisHandler extends BaseHandler
      */
     public function decrement(string $key, int $offset = 1)
     {
-        return $this->increment($key, -$offset);
+        $key = static::validateKey($key);
+
+        return $this->redis->hincrby($key, 'data', -$offset);
     }
 
     /**
@@ -215,7 +184,7 @@ class RedisHandler extends BaseHandler
      */
     public function clean()
     {
-        return $this->redis->flushDB();
+        return $this->redis->flushdb()->getPayload() === 'OK';
     }
 
     /**
@@ -231,17 +200,18 @@ class RedisHandler extends BaseHandler
      */
     public function getMetaData(string $key)
     {
-        $value = $this->get($key);
+        $key = static::validateKey($key);
 
-        if ($value !== null) {
+        $data = array_combine(['__ci_value'], $this->redis->hmget($key, ['__ci_value']));
+
+        if (isset($data['__ci_value']) && $data['__ci_value'] !== false) {
             $time = Time::now()->getTimestamp();
-            $ttl  = $this->redis->ttl(static::validateKey($key, $this->prefix));
-            assert(is_int($ttl));
+            $ttl  = $this->redis->ttl($key);
 
             return [
                 'expire' => $ttl > 0 ? $time + $ttl : null,
                 'mtime'  => $time,
-                'data'   => $value,
+                'data'   => $data['__ci_value'],
             ];
         }
 
@@ -253,6 +223,6 @@ class RedisHandler extends BaseHandler
      */
     public function isSupported(): bool
     {
-        return extension_loaded('redis');
+        return class_exists(Client::class);
     }
 }

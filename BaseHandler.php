@@ -11,68 +11,104 @@ declare(strict_types=1);
  * the LICENSE file that was distributed with this source code.
  */
 
-namespace CodeIgniter\Encryption\Handlers;
+namespace CodeIgniter\Cache\Handlers;
 
-use CodeIgniter\Encryption\EncrypterInterface;
-use Config\Encryption;
+use Closure;
+use CodeIgniter\Cache\CacheInterface;
+use CodeIgniter\Exceptions\BadMethodCallException;
+use CodeIgniter\Exceptions\InvalidArgumentException;
+use Config\Cache;
+use Exception;
 
 /**
- * Base class for encryption handling
+ * Base class for cache handling
+ *
+ * @see \CodeIgniter\Cache\Handlers\BaseHandlerTest
  */
-abstract class BaseHandler implements EncrypterInterface
+abstract class BaseHandler implements CacheInterface
 {
     /**
-     * Constructor
+     * Reserved characters that cannot be used in a key or tag. May be overridden by the config.
+     * From https://github.com/symfony/cache-contracts/blob/c0446463729b89dd4fa62e9aeecc80287323615d/ItemInterface.php#L43
+     *
+     * @deprecated in favor of the Cache config
      */
-    public function __construct(?Encryption $config = null)
-    {
-        $config ??= config(Encryption::class);
+    public const RESERVED_CHARACTERS = '{}()/\@:';
 
-        // make the parameters conveniently accessible
-        foreach (get_object_vars($config) as $key => $value) {
-            if (property_exists($this, $key)) {
-                $this->{$key} = $value;
-            }
+    /**
+     * Maximum key length.
+     */
+    public const MAX_KEY_LENGTH = PHP_INT_MAX;
+
+    /**
+     * Prefix to apply to cache keys.
+     * May not be used by all handlers.
+     *
+     * @var string
+     */
+    protected $prefix;
+
+    /**
+     * Validates a cache key according to PSR-6.
+     * Keys that exceed MAX_KEY_LENGTH are hashed.
+     * From https://github.com/symfony/cache/blob/7b024c6726af21fd4984ac8d1eae2b9f3d90de88/CacheItem.php#L158
+     *
+     * @param string $key    The key to validate
+     * @param string $prefix Optional prefix to include in length calculations
+     *
+     * @throws InvalidArgumentException When $key is not valid
+     */
+    public static function validateKey($key, $prefix = ''): string
+    {
+        if (! is_string($key)) {
+            throw new InvalidArgumentException('Cache key must be a string');
         }
-    }
-
-    /**
-     * Byte-safe substr()
-     *
-     * @param string $str
-     * @param int    $start
-     * @param int    $length
-     *
-     * @return string
-     */
-    protected static function substr($str, $start, $length = null)
-    {
-        return mb_substr($str, $start, $length, '8bit');
-    }
-
-    /**
-     * __get() magic, providing readonly access to some of our properties
-     *
-     * @param string $key Property name
-     *
-     * @return array|bool|int|string|null
-     */
-    public function __get($key)
-    {
-        if ($this->__isset($key)) {
-            return $this->{$key};
+        if ($key === '') {
+            throw new InvalidArgumentException('Cache key cannot be empty.');
         }
 
-        return null;
+        $reserved = config(Cache::class)->reservedCharacters ?? self::RESERVED_CHARACTERS;
+        if ($reserved !== '' && strpbrk($key, $reserved) !== false) {
+            throw new InvalidArgumentException('Cache key contains reserved characters ' . $reserved);
+        }
+
+        // If the key with prefix exceeds the length then return the hashed version
+        return strlen($prefix . $key) > static::MAX_KEY_LENGTH ? $prefix . md5($key) : $prefix . $key;
     }
 
     /**
-     * __isset() magic, providing checking for some of our properties
+     * Get an item from the cache, or execute the given Closure and store the result.
      *
-     * @param string $key Property name
+     * @param string           $key      Cache item name
+     * @param int              $ttl      Time to live
+     * @param Closure(): mixed $callback Callback return value
+     *
+     * @return array|bool|float|int|object|string|null
      */
-    public function __isset($key): bool
+    public function remember(string $key, int $ttl, Closure $callback)
     {
-        return property_exists($this, $key);
+        $value = $this->get($key);
+
+        if ($value !== null) {
+            return $value;
+        }
+
+        $this->save($key, $value = $callback(), $ttl);
+
+        return $value;
+    }
+
+    /**
+     * Deletes items from the cache store matching a given pattern.
+     *
+     * @param string $pattern Cache items glob-style pattern
+     *
+     * @return int|never
+     *
+     * @throws Exception
+     */
+    public function deleteMatching(string $pattern)
+    {
+        throw new BadMethodCallException('The deleteMatching method is not implemented.');
     }
 }

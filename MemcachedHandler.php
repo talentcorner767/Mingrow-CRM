@@ -11,314 +11,269 @@ declare(strict_types=1);
  * the LICENSE file that was distributed with this source code.
  */
 
-namespace CodeIgniter\Session\Handlers;
+namespace CodeIgniter\Cache\Handlers;
 
+use CodeIgniter\Exceptions\BadMethodCallException;
+use CodeIgniter\Exceptions\CriticalError;
 use CodeIgniter\I18n\Time;
-use CodeIgniter\Session\Exceptions\SessionException;
-use Config\Session as SessionConfig;
+use Config\Cache;
+use Exception;
+use Memcache;
 use Memcached;
-use ReturnTypeWillChange;
 
 /**
- * Session handler using Memcache for persistence
+ * Mamcached cache handler
+ *
+ * @see \CodeIgniter\Cache\Handlers\MemcachedHandlerTest
  */
 class MemcachedHandler extends BaseHandler
 {
     /**
-     * Memcached instance
+     * The memcached object
      *
-     * @var Memcached|null
+     * @var Memcache|Memcached
      */
     protected $memcached;
 
     /**
-     * Key prefix
+     * Memcached Configuration
      *
-     * @var string
+     * @var array
      */
-    protected $keyPrefix = 'ci_session:';
+    protected $config = [
+        'host'   => '127.0.0.1',
+        'port'   => 11211,
+        'weight' => 1,
+        'raw'    => false,
+    ];
 
     /**
-     * Lock key
-     *
-     * @var string|null
+     * Note: Use `CacheFactory::getHandler()` to instantiate.
      */
-    protected $lockKey;
-
-    /**
-     * Number of seconds until the session ends.
-     *
-     * @var int
-     */
-    protected $sessionExpiration = 7200;
-
-    /**
-     * @throws SessionException
-     */
-    public function __construct(SessionConfig $config, string $ipAddress)
+    public function __construct(Cache $config)
     {
-        parent::__construct($config, $ipAddress);
+        $this->prefix = $config->prefix;
 
-        $this->sessionExpiration = $config->expiration;
-
-        if (empty($this->savePath)) {
-            throw SessionException::forEmptySavepath();
-        }
-
-        // Add sessionCookieName for multiple session cookies.
-        $this->keyPrefix .= $config->cookieName . ':';
-
-        if ($this->matchIP === true) {
-            $this->keyPrefix .= $this->ipAddress . ':';
-        }
-
-        ini_set('memcached.sess_prefix', $this->keyPrefix);
+        $this->config = array_merge($this->config, $config->memcached);
     }
 
     /**
-     * Re-initialize existing session, or creates a new one.
-     *
-     * @param string $path The path where to store/retrieve the session
-     * @param string $name The session name
+     * Closes the connection to Memcache(d) if present.
      */
-    public function open($path, $name): bool
+    public function __destruct()
     {
-        $this->memcached = new Memcached();
-        $this->memcached->setOption(Memcached::OPT_BINARY_PROTOCOL, true); // required for touch() usage
-
-        $serverList = [];
-
-        foreach ($this->memcached->getServerList() as $server) {
-            $serverList[] = $server['host'] . ':' . $server['port'];
+        if ($this->memcached instanceof Memcached) {
+            $this->memcached->quit();
+        } elseif ($this->memcached instanceof Memcache) {
+            $this->memcached->close();
         }
-
-        if (
-            preg_match_all(
-                '#,?([^,:]+)\:(\d{1,5})(?:\:(\d+))?#',
-                $this->savePath,
-                $matches,
-                PREG_SET_ORDER,
-            ) < 1
-        ) {
-            $this->memcached = null;
-            $this->logger->error('Session: Invalid Memcached save path format: ' . $this->savePath);
-
-            return false;
-        }
-
-        foreach ($matches as $match) {
-            // If Memcached already has this server (or if the port is invalid), skip it
-            if (in_array($match[1] . ':' . $match[2], $serverList, true)) {
-                $this->logger->debug(
-                    'Session: Memcached server pool already has ' . $match[1] . ':' . $match[2],
-                );
-
-                continue;
-            }
-
-            if (! $this->memcached->addServer($match[1], (int) $match[2], $match[3] ?? 0)) {
-                $this->logger->error(
-                    'Could not add ' . $match[1] . ':' . $match[2] . ' to Memcached server pool.',
-                );
-            } else {
-                $serverList[] = $match[1] . ':' . $match[2];
-            }
-        }
-
-        if ($serverList === []) {
-            $this->logger->error('Session: Memcached server pool is empty.');
-
-            return false;
-        }
-
-        return true;
     }
 
     /**
-     * Reads the session data from the session storage, and returns the results.
-     *
-     * @param string $id The session ID
-     *
-     * @return false|string Returns an encoded string of the read data.
-     *                      If nothing was read, it must return false.
+     * {@inheritDoc}
      */
-    #[ReturnTypeWillChange]
-    public function read($id)
+    public function initialize()
     {
-        if (isset($this->memcached) && $this->lockSession($id)) {
-            if (! isset($this->sessionID)) {
-                $this->sessionID = $id;
-            }
-
-            $data = (string) $this->memcached->get($this->keyPrefix . $id);
-
-            $this->fingerprint = md5($data);
-
-            return $data;
-        }
-
-        return '';
-    }
-
-    /**
-     * Writes the session data to the session storage.
-     *
-     * @param string $id   The session ID
-     * @param string $data The encoded session data
-     */
-    public function write($id, $data): bool
-    {
-        if (! isset($this->memcached)) {
-            return false;
-        }
-
-        if ($this->sessionID !== $id) {
-            if (! $this->releaseLock() || ! $this->lockSession($id)) {
-                return false;
-            }
-
-            $this->fingerprint = md5('');
-            $this->sessionID   = $id;
-        }
-
-        if (isset($this->lockKey)) {
-            $this->memcached->replace($this->lockKey, Time::now()->getTimestamp(), 300);
-
-            if ($this->fingerprint !== ($fingerprint = md5($data))) {
-                if ($this->memcached->set($this->keyPrefix . $id, $data, $this->sessionExpiration)) {
-                    $this->fingerprint = $fingerprint;
-
-                    return true;
+        try {
+            if (class_exists(Memcached::class)) {
+                // Create new instance of Memcached
+                $this->memcached = new Memcached();
+                if ($this->config['raw']) {
+                    $this->memcached->setOption(Memcached::OPT_BINARY_PROTOCOL, true);
                 }
 
-                return false;
-            }
-
-            return $this->memcached->touch($this->keyPrefix . $id, $this->sessionExpiration);
-        }
-
-        return false;
-    }
-
-    /**
-     * Closes the current session.
-     */
-    public function close(): bool
-    {
-        if (isset($this->memcached)) {
-            if (isset($this->lockKey)) {
-                $this->memcached->delete($this->lockKey);
-            }
-
-            if (! $this->memcached->quit()) {
-                return false;
-            }
-
-            $this->memcached = null;
-
-            return true;
-        }
-
-        return false;
-    }
-
-    /**
-     * Destroys a session
-     *
-     * @param string $id The session ID being destroyed
-     */
-    public function destroy($id): bool
-    {
-        if (isset($this->memcached, $this->lockKey)) {
-            $this->memcached->delete($this->keyPrefix . $id);
-
-            return $this->destroyCookie();
-        }
-
-        return false;
-    }
-
-    /**
-     * Cleans up expired sessions.
-     *
-     * @param int $max_lifetime Sessions that have not updated
-     *                          for the last max_lifetime seconds will be removed.
-     *
-     * @return false|int Returns the number of deleted sessions on success, or false on failure.
-     */
-    #[ReturnTypeWillChange]
-    public function gc($max_lifetime)
-    {
-        return 1;
-    }
-
-    /**
-     * Acquires an emulated lock.
-     *
-     * @param string $sessionID Session ID
-     */
-    protected function lockSession(string $sessionID): bool
-    {
-        if (isset($this->lockKey)) {
-            return $this->memcached->replace($this->lockKey, Time::now()->getTimestamp(), 300);
-        }
-
-        $lockKey = $this->keyPrefix . $sessionID . ':lock';
-        $attempt = 0;
-
-        do {
-            if ($this->memcached->get($lockKey) !== false) {
-                sleep(1);
-
-                continue;
-            }
-
-            if (! $this->memcached->set($lockKey, Time::now()->getTimestamp(), 300)) {
-                $this->logger->error(
-                    'Session: Error while trying to obtain lock for ' . $this->keyPrefix . $sessionID,
+                // Add server
+                $this->memcached->addServer(
+                    $this->config['host'],
+                    $this->config['port'],
+                    $this->config['weight'],
                 );
 
-                return false;
+                // attempt to get status of servers
+                $stats = $this->memcached->getStats();
+
+                // $stats should be an associate array with a key in the format of host:port.
+                // If it doesn't have the key, we know the server is not working as expected.
+                if (! isset($stats[$this->config['host'] . ':' . $this->config['port']])) {
+                    throw new CriticalError('Cache: Memcached connection failed.');
+                }
+            } elseif (class_exists(Memcache::class)) {
+                // Create new instance of Memcache
+                $this->memcached = new Memcache();
+
+                // Check if we can connect to the server
+                $canConnect = $this->memcached->connect(
+                    $this->config['host'],
+                    $this->config['port'],
+                );
+
+                // If we can't connect, throw a CriticalError exception
+                if ($canConnect === false) {
+                    throw new CriticalError('Cache: Memcache connection failed.');
+                }
+
+                // Add server, third parameter is persistence and defaults to TRUE.
+                $this->memcached->addServer(
+                    $this->config['host'],
+                    $this->config['port'],
+                    true,
+                    $this->config['weight'],
+                );
+            } else {
+                throw new CriticalError('Cache: Not support Memcache(d) extension.');
             }
+        } catch (Exception $e) {
+            throw new CriticalError('Cache: Memcache(d) connection refused (' . $e->getMessage() . ').');
+        }
+    }
 
-            $this->lockKey = $lockKey;
-            break;
-        } while (++$attempt < 30);
+    /**
+     * {@inheritDoc}
+     */
+    public function get(string $key)
+    {
+        $data = [];
+        $key  = static::validateKey($key, $this->prefix);
 
-        if ($attempt === 30) {
-            $this->logger->error(
-                'Session: Unable to obtain lock for ' . $this->keyPrefix . $sessionID . ' after 30 attempts, aborting.',
-            );
+        if ($this->memcached instanceof Memcached) {
+            $data = $this->memcached->get($key);
 
+            // check for unmatched key
+            if ($this->memcached->getResultCode() === Memcached::RES_NOTFOUND) {
+                return null;
+            }
+        } elseif ($this->memcached instanceof Memcache) {
+            $flags = false;
+            $data  = $this->memcached->get($key, $flags);
+
+            // check for unmatched key (i.e. $flags is untouched)
+            if ($flags === false) {
+                return null;
+            }
+        }
+
+        return is_array($data) ? $data[0] : $data;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function save(string $key, $value, int $ttl = 60)
+    {
+        $key = static::validateKey($key, $this->prefix);
+
+        if (! $this->config['raw']) {
+            $value = [
+                $value,
+                Time::now()->getTimestamp(),
+                $ttl,
+            ];
+        }
+
+        if ($this->memcached instanceof Memcached) {
+            return $this->memcached->set($key, $value, $ttl);
+        }
+
+        if ($this->memcached instanceof Memcache) {
+            return $this->memcached->set($key, $value, 0, $ttl);
+        }
+
+        return false;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function delete(string $key)
+    {
+        $key = static::validateKey($key, $this->prefix);
+
+        return $this->memcached->delete($key);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * @return never
+     */
+    public function deleteMatching(string $pattern)
+    {
+        throw new BadMethodCallException('The deleteMatching method is not implemented for Memcached. You must select File, Redis or Predis handlers to use it.');
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function increment(string $key, int $offset = 1)
+    {
+        if (! $this->config['raw']) {
             return false;
         }
 
-        $this->lock = true;
+        $key = static::validateKey($key, $this->prefix);
 
-        return true;
+        return $this->memcached->increment($key, $offset, $offset, 60);
     }
 
     /**
-     * Releases a previously acquired lock
+     * {@inheritDoc}
      */
-    protected function releaseLock(): bool
+    public function decrement(string $key, int $offset = 1)
     {
-        if (isset($this->memcached, $this->lockKey) && $this->lock) {
-            if (
-                ! $this->memcached->delete($this->lockKey)
-                && $this->memcached->getResultCode() !== Memcached::RES_NOTFOUND
-            ) {
-                $this->logger->error(
-                    'Session: Error while trying to free lock for ' . $this->lockKey,
-                );
-
-                return false;
-            }
-
-            $this->lockKey = null;
-            $this->lock    = false;
+        if (! $this->config['raw']) {
+            return false;
         }
 
-        return true;
+        $key = static::validateKey($key, $this->prefix);
+
+        // FIXME: third parameter isn't other handler actions.
+
+        return $this->memcached->decrement($key, $offset, $offset, 60);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function clean()
+    {
+        return $this->memcached->flush();
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function getCacheInfo()
+    {
+        return $this->memcached->getStats();
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function getMetaData(string $key)
+    {
+        $key    = static::validateKey($key, $this->prefix);
+        $stored = $this->memcached->get($key);
+
+        // if not an array, don't try to count for PHP7.2
+        if (! is_array($stored) || count($stored) !== 3) {
+            return false; // @TODO This will return null in a future release
+        }
+
+        [$data, $time, $limit] = $stored;
+
+        return [
+            'expire' => $limit > 0 ? $time + $limit : null,
+            'mtime'  => $time,
+            'data'   => $data,
+        ];
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function isSupported(): bool
+    {
+        return extension_loaded('memcached') || extension_loaded('memcache');
     }
 }
