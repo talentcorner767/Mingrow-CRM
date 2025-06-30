@@ -1,75 +1,38 @@
-<?php
+<div id="page-content" class="page-wrapper clearfix">
+    <div class="row">
+        <div class="col-sm-3 col-lg-2">
+            <?php
+            $tab_view['active_tab'] = "taxes";
+            echo view("settings/tabs", $tab_view);
+            ?>
+        </div>
 
-/*
- *---------------------------------------------------------------
- * CHECK PHP VERSION
- *---------------------------------------------------------------
- */
-
-$minPhpVersion = '8.1'; // If you update this, don't forget to update `spark`.
-if (version_compare(PHP_VERSION, $minPhpVersion, '<')) {
-    $message = sprintf(
-        'Your PHP version must be %s or higher to run CodeIgniter. Current version: %s',
-        $minPhpVersion,
-        PHP_VERSION
-    );
-
-    header('HTTP/1.1 503 Service Unavailable.', true, 503);
-    echo $message;
-
-    exit(1);
-}
-
-
-//set the variable to 'installed' after installation
-$app_state = "pre_installation";
-
-// we don't want to access the main project before installation. redirect to installation page
-if ($app_state === 'pre_installation') {
-    $domain = $_SERVER['HTTP_HOST'] . $_SERVER['SCRIPT_NAME'];
-
-    $domain = preg_replace('/index.php.*/', '', $domain); //remove everything after index.php
-    if (!empty($_SERVER['HTTPS'])) {
-        $domain = 'https://' . $domain;
-    } else {
-        $domain = 'http://' . $domain;
-    }
-
-    header("Location: $domain./install/index.php");
-    exit;
-}
-
-/*
- *---------------------------------------------------------------
- * SET THE CURRENT DIRECTORY
- *---------------------------------------------------------------
- */
-
-// Path to the front controller (this file)
-define('FCPATH', __DIR__ . DIRECTORY_SEPARATOR);
-
-// Ensure the current directory is pointing to the front controller's directory
-if (getcwd() . DIRECTORY_SEPARATOR !== FCPATH) {
-    chdir(FCPATH);
-}
-
-/*
- *---------------------------------------------------------------
- * BOOTSTRAP THE APPLICATION
- *---------------------------------------------------------------
- * This process sets up the path constants, loads and registers
- * our autoloader, along with Composer's, loads our constants
- * and fires up an environment-specific bootstrapping.
- */
-
-// LOAD OUR PATHS CONFIG FILE
-// This is the line that might need to be changed, depending on your folder structure.
-require FCPATH . 'app/Config/Paths.php';
-// ^^^ Change this line if you move your application folder
-
-$paths = new Config\Paths();
-
-// LOAD THE FRAMEWORK BOOTSTRAP FILE
-require $paths->systemDirectory . '/Boot.php';
-
-exit(CodeIgniter\Boot::bootWeb($paths));
+        <div class="col-sm-9 col-lg-10">
+            <div class="card">
+                <div class="page-title clearfix">
+                    <h4> <?php echo app_lang('taxes'); ?></h4>
+                    <div class="title-button-group">
+                        <?php echo modal_anchor(get_uri("taxes/modal_form"), "<i data-feather='plus-circle' class='icon-16'></i> " . app_lang('add_tax'), array("class" => "btn btn-default", "title" => app_lang('add_tax'))); ?>
+                    </div>
+                </div>
+                <div class="table-responsive">
+                    <table id="taxes-table" class="display" cellspacing="0" width="100%">            
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<script type="text/javascript">
+    $(document).ready(function () {
+        $("#taxes-table").appTable({
+            source: '<?php echo_uri("taxes/list_data") ?>',
+            columns: [
+                {title: '<?php echo app_lang("name"); ?>'},
+                {title: '<?php echo app_lang("percentage"); ?>'},
+                {visible: false, searchable: false},
+                {title: '<i data-feather="menu" class="icon-16"></i>', "class": "text-center option w100"}
+            ]
+        });
+    });
+</script>
