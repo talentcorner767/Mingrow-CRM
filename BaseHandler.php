@@ -11,51 +11,68 @@ declare(strict_types=1);
  * the LICENSE file that was distributed with this source code.
  */
 
-namespace CodeIgniter\Log\Handlers;
+namespace CodeIgniter\Encryption\Handlers;
+
+use CodeIgniter\Encryption\EncrypterInterface;
+use Config\Encryption;
 
 /**
- * Base class for logging
+ * Base class for encryption handling
  */
-abstract class BaseHandler implements HandlerInterface
+abstract class BaseHandler implements EncrypterInterface
 {
-    /**
-     * Handles
-     *
-     * @var array
-     */
-    protected $handles;
-
-    /**
-     * Date format for logging
-     *
-     * @var string
-     */
-    protected $dateFormat = 'Y-m-d H:i:s';
-
     /**
      * Constructor
      */
-    public function __construct(array $config)
+    public function __construct(?Encryption $config = null)
     {
-        $this->handles = $config['handles'] ?? [];
+        $config ??= config(Encryption::class);
+
+        // make the parameters conveniently accessible
+        foreach (get_object_vars($config) as $key => $value) {
+            if (property_exists($this, $key)) {
+                $this->{$key} = $value;
+            }
+        }
     }
 
     /**
-     * Checks whether the Handler will handle logging items of this
-     * log Level.
+     * Byte-safe substr()
+     *
+     * @param string $str
+     * @param int    $start
+     * @param int    $length
+     *
+     * @return string
      */
-    public function canHandle(string $level): bool
+    protected static function substr($str, $start, $length = null)
     {
-        return in_array($level, $this->handles, true);
+        return mb_substr($str, $start, $length, '8bit');
     }
 
     /**
-     * Stores the date format to use while logging messages.
+     * __get() magic, providing readonly access to some of our properties
+     *
+     * @param string $key Property name
+     *
+     * @return array|bool|int|string|null
      */
-    public function setDateFormat(string $format): HandlerInterface
+    public function __get($key)
     {
-        $this->dateFormat = $format;
+        if ($this->__isset($key)) {
+            return $this->{$key};
+        }
 
-        return $this;
+        return null;
+    }
+
+    /**
+     * __isset() magic, providing checking for some of our properties
+     *
+     * @param string $key Property name
+     */
+    public function __isset($key): bool
+    {
+        return property_exists($this, $key);
     }
 }

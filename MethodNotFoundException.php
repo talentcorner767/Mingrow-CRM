@@ -11,14 +11,13 @@ declare(strict_types=1);
  * the LICENSE file that was distributed with this source code.
  */
 
-namespace CodeIgniter\Exceptions;
+namespace CodeIgniter\Router\Exceptions;
+
+use CodeIgniter\Exceptions\RuntimeException;
 
 /**
- * Provides a domain-level interface for broad capture
- * of all framework-related exceptions.
- *
- * catch (\CodeIgniter\Exceptions\ExceptionInterface) { ... }
+ * @internal
  */
-interface ExceptionInterface
+final class MethodNotFoundException extends RuntimeException implements ExceptionInterface
 {
 }

@@ -14,11 +14,9 @@ declare(strict_types=1);
 namespace CodeIgniter\Exceptions;
 
 /**
- * Provides a domain-level interface for broad capture
- * of all framework-related exceptions.
- *
- * catch (\CodeIgniter\Exceptions\ExceptionInterface) { ... }
+ * Exception thrown if a function is called in the wrong way, or the function
+ * does not exist.
  */
-interface ExceptionInterface
+class BadFunctionCallException extends \BadFunctionCallException implements ExceptionInterface
 {
 }

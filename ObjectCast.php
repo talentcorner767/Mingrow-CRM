@@ -11,14 +11,18 @@ declare(strict_types=1);
  * the LICENSE file that was distributed with this source code.
  */
 
-namespace CodeIgniter\Exceptions;
+namespace CodeIgniter\Entity\Cast;
 
 /**
- * Provides a domain-level interface for broad capture
- * of all framework-related exceptions.
- *
- * catch (\CodeIgniter\Exceptions\ExceptionInterface) { ... }
+ * Class ObjectCast
  */
-interface ExceptionInterface
+class ObjectCast extends BaseCast
 {
+    /**
+     * {@inheritDoc}
+     */
+    public static function get($value, array $params = []): object
+    {
+        return (object) $value;
+    }
 }
