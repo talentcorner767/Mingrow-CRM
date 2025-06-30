@@ -11,8 +11,9 @@ declare(strict_types=1);
  * the LICENSE file that was distributed with this source code.
  */
 
-// Filters language settings
-return [
-    'noFilter'           => '"{0}" filter must have a matching alias defined.',
-    'incorrectInterface' => '"{0}" must implement CodeIgniter\Filters\FilterInterface.',
-];
+namespace CodeIgniter\HTTP;
+
+interface ResponsableInterface
+{
+    public function getResponse(): ResponseInterface;
+}

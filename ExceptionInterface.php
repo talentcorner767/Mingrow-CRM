@@ -2,10 +2,23 @@
 
 declare(strict_types=1);
 
-namespace Laminas\Escaper\Exception;
+/**
+ * This file is part of CodeIgniter 4 framework.
+ *
+ * (c) CodeIgniter Foundation <admin@codeigniter.com>
+ *
+ * For the full copyright and license information, please view
+ * the LICENSE file that was distributed with this source code.
+ */
 
-use Throwable;
+namespace CodeIgniter\HTTP\Exceptions;
 
-interface ExceptionInterface extends Throwable
+/**
+ * Provides a domain-level interface for broad capture
+ * of all HTTP-related exceptions.
+ *
+ * catch (\CodeIgniter\HTTP\Exceptions\ExceptionInterface) { ... }
+ */
+interface ExceptionInterface extends \CodeIgniter\Exceptions\ExceptionInterface
 {
 }

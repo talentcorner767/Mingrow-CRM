@@ -11,8 +11,10 @@ declare(strict_types=1);
  * the LICENSE file that was distributed with this source code.
  */
 
-// Filters language settings
+// Files language settings
 return [
-    'noFilter'           => '"{0}" filter must have a matching alias defined.',
-    'incorrectInterface' => '"{0}" must implement CodeIgniter\Filters\FilterInterface.',
+    'fileNotFound'      => 'File not found: "{0}"',
+    'cannotMove'        => 'Could not move file "{0}" to "{1}". Reason: {2}',
+    'expectedDirectory' => '{0} expects a valid directory.',
+    'expectedFile'      => '{0} expects a valid file.',
 ];

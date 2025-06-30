@@ -11,8 +11,7 @@ declare(strict_types=1);
  * the LICENSE file that was distributed with this source code.
  */
 
-// Filters language settings
+// "Language" language settings
 return [
-    'noFilter'           => '"{0}" filter must have a matching alias defined.',
-    'incorrectInterface' => '"{0}" must implement CodeIgniter\Filters\FilterInterface.',
+    'invalidMessageFormat' => 'Invalid message format: "{0}", args: "{1}"',
 ];

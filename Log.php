@@ -11,8 +11,8 @@ declare(strict_types=1);
  * the LICENSE file that was distributed with this source code.
  */
 
-// Filters language settings
+// Log language settings
 return [
-    'noFilter'           => '"{0}" filter must have a matching alias defined.',
-    'incorrectInterface' => '"{0}" must implement CodeIgniter\Filters\FilterInterface.',
+    'invalidLogLevel'    => '"{0}" is an invalid log level.',
+    'invalidMessageType' => 'The given message type "{0}" is not supported.',
 ];
