@@ -11,250 +11,174 @@ declare(strict_types=1);
  * the LICENSE file that was distributed with this source code.
  */
 
-namespace CodeIgniter\Debug\Toolbar\Collectors;
+namespace CodeIgniter\Database;
 
-use CodeIgniter\Database\Query;
-use CodeIgniter\I18n\Time;
-use Config\Toolbar;
+use CodeIgniter\Exceptions\ConfigException;
+use CodeIgniter\Exceptions\CriticalError;
+use CodeIgniter\Exceptions\InvalidArgumentException;
 
 /**
- * Collector for the Database tab of the Debug Toolbar.
+ * Database Connection Factory
  *
- * @see \CodeIgniter\Debug\Toolbar\Collectors\DatabaseTest
+ * Creates and returns an instance of the appropriate Database Connection.
  */
-class Database extends BaseCollector
+class Database
 {
     /**
-     * Whether this collector has timeline data.
+     * Maintains an array of the instances of all connections that have
+     * been created.
      *
-     * @var bool
-     */
-    protected $hasTimeline = true;
-
-    /**
-     * Whether this collector should display its own tab.
-     *
-     * @var bool
-     */
-    protected $hasTabContent = true;
-
-    /**
-     * Whether this collector has data for the Vars tab.
-     *
-     * @var bool
-     */
-    protected $hasVarData = false;
-
-    /**
-     * The name used to reference this collector in the toolbar.
-     *
-     * @var string
-     */
-    protected $title = 'Database';
-
-    /**
-     * Array of database connections.
+     * Helps to keep track of all open connections for performance
+     * monitoring, logging, etc.
      *
      * @var array
      */
-    protected $connections;
+    protected $connections = [];
 
     /**
-     * The query instances that have been collected
-     * through the DBQuery Event.
+     * Parses the connection binds and creates a Database Connection instance.
      *
-     * @var array
+     * @return BaseConnection
+     *
+     * @throws InvalidArgumentException
      */
-    protected static $queries = [];
-
-    /**
-     * Constructor
-     */
-    public function __construct()
+    public function load(array $params = [], string $alias = '')
     {
-        $this->getConnections();
+        if ($alias === '') {
+            throw new InvalidArgumentException('You must supply the parameter: alias.');
+        }
+
+        if (! empty($params['DSN']) && str_contains($params['DSN'], '://')) {
+            $params = $this->parseDSN($params);
+        }
+
+        if (empty($params['DBDriver'])) {
+            throw new InvalidArgumentException('You have not selected a database type to connect to.');
+        }
+
+        assert($this->checkDbExtension($params['DBDriver']));
+
+        $this->connections[$alias] = $this->initDriver($params['DBDriver'], 'Connection', $params);
+
+        return $this->connections[$alias];
     }
 
     /**
-     * The static method used during Events to collect
-     * data.
-     *
-     * @internal
-     *
-     * @return void
+     * Creates a Forge instance for the current database type.
      */
-    public static function collect(Query $query)
+    public function loadForge(ConnectionInterface $db): Forge
     {
-        $config = config(Toolbar::class);
+        if (! $db->connID) {
+            $db->initialize();
+        }
 
-        // Provide default in case it's not set
-        $max = $config->maxQueries ?: 100;
+        return $this->initDriver($db->DBDriver, 'Forge', $db);
+    }
 
-        if (count(static::$queries) < $max) {
-            $queryString = $query->getQuery();
+    /**
+     * Creates an instance of Utils for the current database type.
+     */
+    public function loadUtils(ConnectionInterface $db): BaseUtils
+    {
+        if (! $db->connID) {
+            $db->initialize();
+        }
 
-            $backtrace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
+        return $this->initDriver($db->DBDriver, 'Utils', $db);
+    }
 
-            if (! is_cli()) {
-                // when called in the browser, the first two trace arrays
-                // are from the DB event trigger, which are unneeded
-                $backtrace = array_slice($backtrace, 2);
+    /**
+     * Parses universal DSN string
+     *
+     * @throws InvalidArgumentException
+     */
+    protected function parseDSN(array $params): array
+    {
+        $dsn = parse_url($params['DSN']);
+
+        if ($dsn === 0 || $dsn === '' || $dsn === '0' || $dsn === [] || $dsn === false || $dsn === null) {
+            throw new InvalidArgumentException('Your DSN connection string is invalid.');
+        }
+
+        $dsnParams = [
+            'DSN'      => '',
+            'DBDriver' => $dsn['scheme'],
+            'hostname' => isset($dsn['host']) ? rawurldecode($dsn['host']) : '',
+            'port'     => isset($dsn['port']) ? rawurldecode((string) $dsn['port']) : '',
+            'username' => isset($dsn['user']) ? rawurldecode($dsn['user']) : '',
+            'password' => isset($dsn['pass']) ? rawurldecode($dsn['pass']) : '',
+            'database' => isset($dsn['path']) ? rawurldecode(substr($dsn['path'], 1)) : '',
+        ];
+
+        if (isset($dsn['query']) && ($dsn['query'] !== '')) {
+            parse_str($dsn['query'], $extra);
+
+            foreach ($extra as $key => $val) {
+                if (is_string($val) && in_array(strtolower($val), ['true', 'false', 'null'], true)) {
+                    $val = $val === 'null' ? null : filter_var($val, FILTER_VALIDATE_BOOLEAN);
+                }
+
+                $dsnParams[$key] = $val;
             }
-
-            static::$queries[] = [
-                'query'     => $query,
-                'string'    => $queryString,
-                'duplicate' => in_array($queryString, array_column(static::$queries, 'string', null), true),
-                'trace'     => $backtrace,
-            ];
-        }
-    }
-
-    /**
-     * Returns timeline data formatted for the toolbar.
-     *
-     * @return array The formatted data or an empty array.
-     */
-    protected function formatTimelineData(): array
-    {
-        $data = [];
-
-        foreach ($this->connections as $alias => $connection) {
-            // Connection Time
-            $data[] = [
-                'name'      => 'Connecting to Database: "' . $alias . '"',
-                'component' => 'Database',
-                'start'     => $connection->getConnectStart(),
-                'duration'  => $connection->getConnectDuration(),
-            ];
         }
 
-        foreach (static::$queries as $query) {
-            $data[] = [
-                'name'      => 'Query',
-                'component' => 'Database',
-                'start'     => $query['query']->getStartTime(true),
-                'duration'  => $query['query']->getDuration(),
-                'query'     => $query['query']->debugToolbarDisplay(),
-            ];
+        return array_merge($params, $dsnParams);
+    }
+
+    /**
+     * Creates a database object.
+     *
+     * @param string                    $driver   Driver name. FQCN can be used.
+     * @param string                    $class    'Connection'|'Forge'|'Utils'
+     * @param array|ConnectionInterface $argument The constructor parameter or DB connection
+     *
+     * @return BaseConnection|BaseUtils|Forge
+     */
+    protected function initDriver(string $driver, string $class, $argument): object
+    {
+        $classname = (! str_contains($driver, '\\'))
+            ? "CodeIgniter\\Database\\{$driver}\\{$class}"
+            : $driver . '\\' . $class;
+
+        return new $classname($argument);
+    }
+
+    /**
+     * Check the PHP database extension is loaded.
+     *
+     * @param string $driver DB driver or FQCN for custom driver
+     */
+    private function checkDbExtension(string $driver): bool
+    {
+        if (str_contains($driver, '\\')) {
+            // Cannot check a fully qualified classname for a custom driver.
+            return true;
         }
 
-        return $data;
-    }
+        $extensionMap = [
+            // DBDriver => PHP extension
+            'MySQLi'  => 'mysqli',
+            'SQLite3' => 'sqlite3',
+            'Postgre' => 'pgsql',
+            'SQLSRV'  => 'sqlsrv',
+            'OCI8'    => 'oci8',
+        ];
 
-    /**
-     * Returns the data of this collector to be formatted in the toolbar
-     */
-    public function display(): array
-    {
-        $data            = [];
-        $data['queries'] = array_map(static function (array $query): array {
-            $isDuplicate = $query['duplicate'] === true;
+        $extension = $extensionMap[$driver] ?? '';
 
-            $firstNonSystemLine = '';
+        if ($extension === '') {
+            $message = 'Invalid DBDriver name: "' . $driver . '"';
 
-            foreach ($query['trace'] as $index => &$line) {
-                // simplify file and line
-                if (isset($line['file'])) {
-                    $line['file'] = clean_path($line['file']) . ':' . $line['line'];
-                    unset($line['line']);
-                } else {
-                    $line['file'] = '[internal function]';
-                }
+            throw new ConfigException($message);
+        }
 
-                // find the first trace line that does not originate from `system/`
-                if ($firstNonSystemLine === '' && ! str_contains($line['file'], 'SYSTEMPATH')) {
-                    $firstNonSystemLine = $line['file'];
-                }
+        if (extension_loaded($extension)) {
+            return true;
+        }
 
-                // simplify function call
-                if (isset($line['class'])) {
-                    $line['function'] = $line['class'] . $line['type'] . $line['function'];
-                    unset($line['class'], $line['type']);
-                }
+        $message = 'The required PHP extension "' . $extension . '" is not loaded.'
+            . ' Install and enable it to use "' . $driver . '" driver.';
 
-                if (strrpos($line['function'], '{closure}') === false) {
-                    $line['function'] .= '()';
-                }
-
-                $line['function'] = str_repeat(chr(0xC2) . chr(0xA0), 8) . $line['function'];
-
-                // add index numbering padded with nonbreaking space
-                $indexPadded = str_pad(sprintf('%d', $index + 1), 3, ' ', STR_PAD_LEFT);
-                $indexPadded = preg_replace('/\s/', chr(0xC2) . chr(0xA0), $indexPadded);
-
-                $line['index'] = $indexPadded . str_repeat(chr(0xC2) . chr(0xA0), 4);
-            }
-
-            return [
-                'hover'      => $isDuplicate ? 'This query was called more than once.' : '',
-                'class'      => $isDuplicate ? 'duplicate' : '',
-                'duration'   => ((float) $query['query']->getDuration(5) * 1000) . ' ms',
-                'sql'        => $query['query']->debugToolbarDisplay(),
-                'trace'      => $query['trace'],
-                'trace-file' => $firstNonSystemLine,
-                'qid'        => md5($query['query'] . Time::now()->format('0.u00 U')),
-            ];
-        }, static::$queries);
-
-        return $data;
-    }
-
-    /**
-     * Gets the "badge" value for the button.
-     */
-    public function getBadgeValue(): int
-    {
-        return count(static::$queries);
-    }
-
-    /**
-     * Information to be displayed next to the title.
-     *
-     * @return string The number of queries (in parentheses) or an empty string.
-     */
-    public function getTitleDetails(): string
-    {
-        $this->getConnections();
-
-        $queryCount      = count(static::$queries);
-        $uniqueCount     = count(array_filter(static::$queries, static fn ($query): bool => $query['duplicate'] === false));
-        $connectionCount = count($this->connections);
-
-        return sprintf(
-            '(%d total Quer%s, %d %s unique across %d Connection%s)',
-            $queryCount,
-            $queryCount > 1 ? 'ies' : 'y',
-            $uniqueCount,
-            $uniqueCount > 1 ? 'of them' : '',
-            $connectionCount,
-            $connectionCount > 1 ? 's' : '',
-        );
-    }
-
-    /**
-     * Does this collector have any data collected?
-     */
-    public function isEmpty(): bool
-    {
-        return static::$queries === [];
-    }
-
-    /**
-     * Display the icon.
-     *
-     * Icon from https://icons8.com - 1em package
-     */
-    public function icon(): string
-    {
-        return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAADMSURBVEhLY6A3YExLSwsA4nIycQDIDIhRWEBqamo/UNF/SjDQjF6ocZgAKPkRiFeEhoYyQ4WIBiA9QAuWAPEHqBAmgLqgHcolGQD1V4DMgHIxwbCxYD+QBqcKINseKo6eWrBioPrtQBq/BcgY5ht0cUIYbBg2AJKkRxCNWkDQgtFUNJwtABr+F6igE8olGQD114HMgHIxAVDyAhA/AlpSA8RYUwoeXAPVex5qHCbIyMgwBCkAuQJIY00huDBUz/mUlBQDqHGjgBjAwAAACexpph6oHSQAAAAASUVORK5CYII=';
-    }
-
-    /**
-     * Gets the connections from the database config
-     */
-    private function getConnections(): void
-    {
-        $this->connections = \Config\Database::getConnections();
+        throw new CriticalError($message);
     }
 }
