@@ -1,99 +1,75 @@
 <?php
 
-defined('PLUGINPATH') || exit('No direct script access allowed');
+/*
+ *---------------------------------------------------------------
+ * CHECK PHP VERSION
+ *---------------------------------------------------------------
+ */
+
+$minPhpVersion = '8.1'; // If you update this, don't forget to update `spark`.
+if (version_compare(PHP_VERSION, $minPhpVersion, '<')) {
+    $message = sprintf(
+        'Your PHP version must be %s or higher to run CodeIgniter. Current version: %s',
+        $minPhpVersion,
+        PHP_VERSION
+    );
+
+    header('HTTP/1.1 503 Service Unavailable.', true, 503);
+    echo $message;
+
+    exit(1);
+}
+
+
+//set the variable to 'installed' after installation
+$app_state = "pre_installation";
+
+// we don't want to access the main project before installation. redirect to installation page
+if ($app_state === 'pre_installation') {
+    $domain = $_SERVER['HTTP_HOST'] . $_SERVER['SCRIPT_NAME'];
+
+    $domain = preg_replace('/index.php.*/', '', $domain); //remove everything after index.php
+    if (!empty($_SERVER['HTTPS'])) {
+        $domain = 'https://' . $domain;
+    } else {
+        $domain = 'http://' . $domain;
+    }
+
+    header("Location: $domain./install/index.php");
+    exit;
+}
 
 /*
-  Plugin Name: Flexible Backup & Restore Module
-  Plugin URL: https://codecanyon.net/item/flexible-backup-restore-module-for-rise-crm/48619366
-  Description: A comprehensive backup and restore module with automatic scheduling feature
-  Version: 1.1.0
-  Requires at least: 3.5.2
+ *---------------------------------------------------------------
+ * SET THE CURRENT DIRECTORY
+ *---------------------------------------------------------------
  */
-define('BACKUP_FOLDER', FCPATH.'flexiblebackup'.'/');
 
-require_once __DIR__.'/vendor/autoload.php';
-require_once __DIR__.'/Libraries/Apiinit.php';
-require_once __DIR__.'/Libraries/Backup.php';
-require_once __DIR__.'/Libraries/BackupRemote.php';
-require_once __DIR__.'/Libraries/ManageBackup.php';
-require_once __DIR__.'/Libraries/SqlScriptParser.php';
+// Path to the front controller (this file)
+define('FCPATH', __DIR__ . DIRECTORY_SEPARATOR);
 
-use Flexiblebackup\Libraries\Apiinit;
-use Flexiblebackup\Libraries\Backup;
+// Ensure the current directory is pointing to the front controller's directory
+if (getcwd() . DIRECTORY_SEPARATOR !== FCPATH) {
+    chdir(FCPATH);
+}
 
+/*
+ *---------------------------------------------------------------
+ * BOOTSTRAP THE APPLICATION
+ *---------------------------------------------------------------
+ * This process sets up the path constants, loads and registers
+ * our autoloader, along with Composer's, loads our constants
+ * and fires up an environment-specific bootstrapping.
+ */
 
-app_hooks()->add_filter('app_filter_action_links_of_Flexiblebackup', function () {
-    $action_links_array = [
-        anchor(get_uri('flexiblebackup/settings/existing_backups'), 'Flexiblebackup settings'),
-    ];
+// LOAD OUR PATHS CONFIG FILE
+// This is the line that might need to be changed, depending on your folder structure.
+require FCPATH . 'app/Config/Paths.php';
+// ^^^ Change this line if you move your application folder
 
-    return $action_links_array;
-});
+$paths = new Config\Paths();
 
-app_hooks()->add_filter('app_filter_staff_left_menu', function ($sidebar_menu) {
-    $backup_submenu = [];
+// LOAD THE FRAMEWORK BOOTSTRAP FILE
+require $paths->systemDirectory . '/Boot.php';
 
-    $backup_submenu[] = [
-        'name'  => 'existing_backups',
-        'url'   => 'flexiblebackup/settings/existing_backups',
-        'class' => '',
-    ];
-
-    $backup_submenu[] = [
-        'name'  => 'next_scheduled_backup',
-        'url'   => 'flexiblebackup/settings/next_scheduled_backup',
-        'class' => '',
-    ];
-
-    $backup_submenu[] = [
-        'name'  => 'settings',
-        'url'   => 'flexiblebackup/settings/settings',
-        'class' => '',
-    ];
-
-    $backup_submenu[] = [
-        'name'  => 'backup',
-        'url'   => 'flexiblebackup/backup',
-        'class' => '',
-    ];
-
-    $sidebar_menu['flexiblebackup'] = [
-        'name'     => 'flexiblebackup',
-        'url'      => 'flexiblebackup',
-        'class'    => 'download-cloud',
-        'position' => 3,
-        'submenu'  => $backup_submenu,
-    ];
-
-    return $sidebar_menu;
-});
-
-//install dependencies
-register_installation_hook('Flexiblebackup', function ($item_purchase_code) {
-    include PLUGINPATH.'Flexiblebackup/install/do_install.php';
-});
-
-register_uninstallation_hook('Flexiblebackup', function () {
-    $dbprefix = get_db_prefix();
-    $db = db_connect('default');
-
-    $sql_query = 'DELETE FROM `'.$dbprefix.'settings` WHERE `'.$dbprefix."settings`.`setting_name` IN ('Flexiblebackup_verification_id', 'Flexiblebackup_last_verification', 'Flexiblebackup_product_token', 'Flexiblebackup_heartbeat');";
-    $db->query($sql_query);
-});
-
-app_hooks()->add_action('app_hook_head_extension', function () {
-    echo '
-        <link href="'.base_url(PLUGIN_URL_PATH.'Flexiblebackup/assets/css/tree.css?v='.get_setting('app_version')).'"  rel="stylesheet" type="text/css" />
-    ';
-});
-
-app_hooks()->add_action('app_hook_layout_main_view_extension', function () {
-    echo '
-        <script src="'.base_url(PLUGIN_URL_PATH.'Flexiblebackup/assets/js/tree.js?v='.get_setting('app_version')).'"></script>
-    ';
-});
-
-app_hooks()->add_action('app_hook_after_cron_run', function () {
-    $backup_lib = new Backup();
-    $backup_lib->runScheduledBackups();
-});
+exit(CodeIgniter\Boot::bootWeb($paths));
