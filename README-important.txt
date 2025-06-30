@@ -1,7 +1,7 @@
-# Added btn-close and m-0 class for modal close button. 
+//js/bootstrap-timepicker.js
+Added custom icon in line #258, #260, #263 & #267
 
-# Changed data-bs-dismiss with data-dismiss for closing modal.
+//js/bootstrap-timepicker.min.js
+Added custom icon in line #5 (chevron-up and chevron-down icon)
 
-# Added custom functions for dropdowns
-
-# Added dropdown-item class with dropdown list items
+To fix icon issue.
